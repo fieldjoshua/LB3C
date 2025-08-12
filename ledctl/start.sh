@@ -24,6 +24,24 @@ if [ -d "venv" ]; then
     source venv/bin/activate
 fi
 
+# Check for .env file and secret key
+if [ ! -f ".env" ]; then
+    echo -e "${RED}ERROR: .env file not found!${NC}"
+    echo "Please copy .env.example to .env and configure it:"
+    echo "  cp .env.example .env"
+    echo "  python3 generate_secret.py"
+    exit 1
+fi
+
+# Check if FLASK_SECRET_KEY is set
+if ! grep -q "FLASK_SECRET_KEY=" .env || grep -q "FLASK_SECRET_KEY=your-secret-key-here" .env; then
+    echo -e "${RED}ERROR: FLASK_SECRET_KEY not configured!${NC}"
+    echo "Generate a secret key with:"
+    echo "  python3 generate_secret.py"
+    echo "Then add it to your .env file"
+    exit 1
+fi
+
 # Check if running as root/sudo
 if [ "$EUID" -ne 0 ]; then 
     echo -e "${YELLOW}Note: Not running as root. Hardware access may fail.${NC}"

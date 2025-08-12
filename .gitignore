@@ -23,6 +23,8 @@ ledctl/uploads/*
 ledctl/config/device.yml
 *.log
 .env
+.env.*
+!.env.example
 
 # Testing
 .coverage

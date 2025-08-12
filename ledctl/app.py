@@ -22,12 +22,18 @@ import argparse
 from flask import Flask, render_template, request, jsonify, send_from_directory
 from flask_socketio import SocketIO, emit
 from werkzeug.utils import secure_filename
+from logging.handlers import RotatingFileHandler
 
 # Add project root to Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from core.config import Config, ConfigurationError
 from core.drivers import DeviceManager
 from core.drivers.mock import MockDevice
+from core.errors import (
+    register_error_handlers, DeviceError, AnimationError, 
+    FileProcessingError, safe_execute, emit_error
+)
 
 # Try to import hardware drivers (may fail on non-Pi systems)
 try:
@@ -50,17 +56,46 @@ except ImportError as e:
 from core.frames import FrameProcessor, MediaAnimation
 from core.gamma import GammaCorrector, create_corrector
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Initialize configuration
+try:
+    config = Config()
+    config.validate()
+except ConfigurationError as e:
+    print(f"Configuration error: {e}")
+    print("Please ensure FLASK_SECRET_KEY is set in your environment or .env file")
+    sys.exit(1)
+
+# Configure logging with rotation
 logger = logging.getLogger(__name__)
+logger.setLevel(getattr(logging, config.logging['level']))
+
+# Console handler
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(logging.Formatter(config.logging['format']))
+logger.addHandler(console_handler)
+
+# File handler with rotation
+if config.logging['file']:
+    file_handler = RotatingFileHandler(
+        config.logging['file'],
+        maxBytes=config.logging['max_size'],
+        backupCount=config.logging['backup_count']
+    )
+    file_handler.setFormatter(logging.Formatter(config.logging['format']))
+    logger.addHandler(file_handler)
 
 # Flask app setup
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your-secret-key-here'  # TODO: Use environment variable
+app.config.update(config.flask)
+app.config['MAX_CONTENT_LENGTH'] = config.upload['max_size']
+app.config['SESSION_COOKIE_SECURE'] = config.security['session_cookie_secure']
+app.config['SESSION_COOKIE_HTTPONLY'] = config.security['session_cookie_httponly']
+app.config['SESSION_COOKIE_SAMESITE'] = config.security['session_cookie_samesite']
+
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+
+# Register error handlers
+register_error_handlers(app, socketio)
 
 # Global state
 class AppState:
@@ -100,18 +135,32 @@ def initialize_device(device_type, config):
     try:
         # Close existing device if any
         if state.device:
-            state.device.close()
+            try:
+                state.device.close()
+            except Exception as e:
+                logger.warning(f"Error closing previous device: {e}")
             
         # Get device-specific config
         device_config = config.copy()
         
         # Create device
-        device = DeviceManager.create_device(device_type, device_config)
-        device.open()
+        try:
+            device = DeviceManager.create_device(device_type, device_config)
+        except Exception as e:
+            raise DeviceError(f"Failed to create {device_type} device: {str(e)}", device_type=device_type)
+        
+        try:
+            device.open()
+        except Exception as e:
+            raise DeviceError(f"Failed to open {device_type} device: {str(e)}", device_type=device_type)
         
         # Create frame processor
-        width, height = device.get_dimensions()
-        state.frame_processor = FrameProcessor(width, height, config)
+        try:
+            width, height = device.get_dimensions()
+            state.frame_processor = FrameProcessor(width, height, config)
+        except Exception as e:
+            device.close()
+            raise DeviceError(f"Failed to create frame processor: {str(e)}", device_type=device_type)
         
         # Create gamma corrector
         state.gamma_corrector = create_corrector(config)
@@ -120,11 +169,20 @@ def initialize_device(device_type, config):
         state.device = device
         logger.info(f"Initialized {device_type} device: {width}x{height}")
         
+        # Emit success to clients
+        socketio.emit('device_initialized', {
+            'type': device_type,
+            'width': width,
+            'height': height
+        })
+        
         return True
         
+    except DeviceError:
+        raise  # Re-raise device errors
     except Exception as e:
-        logger.error(f"Failed to initialize device: {e}")
-        return False
+        logger.exception(f"Unexpected error initializing device")
+        raise DeviceError(f"Failed to initialize device: {str(e)}", device_type=device_type)
 
 
 def playback_worker():
@@ -195,7 +253,7 @@ def api_status():
 @app.route('/api/files')
 def api_files():
     """List uploaded files"""
-    upload_dir = state.config.get('server', {}).get('upload_folder', 'uploads')
+    upload_dir = config.upload['folder']
     
     if not os.path.exists(upload_dir):
         os.makedirs(upload_dir)
@@ -216,36 +274,63 @@ def api_files():
 @app.route('/api/upload', methods=['POST'])
 def api_upload():
     """Handle file upload"""
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file provided'}), 400
-        
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
-        
-    # Check file extension
-    allowed_extensions = state.config.get('server', {}).get('allowed_extensions', [])
-    ext = os.path.splitext(file.filename)[1].lower()[1:]  # Remove the dot
-    
-    if ext not in allowed_extensions:
-        return jsonify({'error': f'File type not allowed: {ext}'}), 400
-        
-    # Save file
-    upload_dir = state.config.get('server', {}).get('upload_folder', 'uploads')
-    if not os.path.exists(upload_dir):
-        os.makedirs(upload_dir)
-        
-    filename = secure_filename(file.filename)
-    filepath = os.path.join(upload_dir, filename)
-    
     try:
-        file.save(filepath)
-        logger.info(f"File uploaded: {filename}")
-        return jsonify({'success': True, 'filename': filename})
+        if 'file' not in request.files:
+            raise FileProcessingError('No file provided in request')
+            
+        file = request.files['file']
+        if not file or file.filename == '':
+            raise FileProcessingError('No file selected')
+            
+        # Sanitize filename
+        original_filename = file.filename
+        filename = secure_filename(original_filename)
+        if not filename:
+            raise FileProcessingError('Invalid filename', filename=original_filename)
+            
+        # Check file extension
+        ext = os.path.splitext(filename)[1].lower()[1:]  # Remove the dot
         
+        if ext not in config.upload['allowed_extensions']:
+            raise FileProcessingError(
+                f'File type not allowed: {ext}',
+                filename=filename,
+                reason=f"Allowed types: {', '.join(config.upload['allowed_extensions'])}"
+            )
+            
+        # Ensure upload directory exists
+        upload_dir = config.upload['folder']
+        os.makedirs(upload_dir, exist_ok=True)
+        
+        # Check for duplicate filename
+        filepath = os.path.join(upload_dir, filename)
+        if os.path.exists(filepath):
+            # Add timestamp to make unique
+            base, ext = os.path.splitext(filename)
+            timestamp = int(time.time())
+            filename = f"{base}_{timestamp}{ext}"
+            filepath = os.path.join(upload_dir, filename)
+        
+        # Save file
+        file.save(filepath)
+        logger.info(f"File uploaded: {filename} (original: {original_filename})")
+        
+        # Verify file was saved correctly
+        if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
+            os.remove(filepath) if os.path.exists(filepath) else None
+            raise FileProcessingError('File save failed', filename=filename)
+            
+        return jsonify({
+            'success': True,
+            'filename': filename,
+            'size': os.path.getsize(filepath)
+        })
+        
+    except FileProcessingError:
+        raise  # Let error handler handle it
     except Exception as e:
-        logger.error(f"Upload failed: {e}")
-        return jsonify({'error': str(e)}), 500
+        logger.exception("Unexpected upload error")
+        raise FileProcessingError(f"Upload failed: {str(e)}")
 
 
 # Socket.IO events
@@ -270,7 +355,7 @@ def handle_play(data):
         emit('error', {'message': 'No filename provided'})
         return
         
-    upload_dir = state.config.get('server', {}).get('upload_folder', 'uploads')
+    upload_dir = config.upload['folder']
     filepath = os.path.join(upload_dir, filename)
     
     if not os.path.exists(filepath):
@@ -380,23 +465,35 @@ def register_devices():
 
 def main():
     """Main entry point"""
+    global config
+    
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='LED Animation Control System')
     parser.add_argument('--mock', action='store_true', help='Run in mock mode without hardware')
-    parser.add_argument('--config', default='config/device.default.yml', help='Path to config file')
+    parser.add_argument('--config', help='Path to config file')
+    parser.add_argument('--env', help='Path to .env file')
     args = parser.parse_args()
+    
+    # Re-initialize config with command line args if provided
+    if args.config or args.env:
+        try:
+            config = Config(config_path=args.config, env_file=args.env)
+            config.validate()
+        except ConfigurationError as e:
+            logger.error(f"Configuration error: {e}")
+            return
     
     # Register device types
     register_devices()
     
-    # Load configuration
-    state.config = load_config(args.config)
+    # Load YAML configuration for device settings
+    state.config = load_config(args.config or config.config_path)
     if not state.config:
-        logger.error("Failed to load configuration")
+        logger.error("Failed to load device configuration")
         return
         
-    # Override device type if mock mode
-    if args.mock:
+    # Override device type if mock mode or env variable
+    if args.mock or config.hardware['mock_mode']:
         state.config['device'] = 'MOCK'
         logger.info("Running in mock mode")
         
@@ -411,15 +508,10 @@ def main():
     state.playback_thread.daemon = True
     state.playback_thread.start()
     
-    # Get server config
-    server_config = state.config.get('server', {})
-    host = server_config.get('host', '0.0.0.0')
-    port = server_config.get('port', 5000)
-    debug = server_config.get('debug', False)
-    
     # Run Flask app
-    logger.info(f"Starting server on {host}:{port}")
-    socketio.run(app, host=host, port=port, debug=debug)
+    logger.info(f"Starting server on {config.server['host']}:{config.server['port']}")
+    logger.info(f"Environment: {config.flask['ENV']}")
+    socketio.run(app, host=config.server['host'], port=config.server['port'], debug=config.flask['DEBUG']}
 
 
 if __name__ == '__main__':

@@ -10,3 +10,4 @@ rpi-rgb-led-matrix==1.12.3
 rpi_ws281x==5.0.0
 requests==2.31.0
 werkzeug==3.0.1
+python-dotenv==1.0.0
