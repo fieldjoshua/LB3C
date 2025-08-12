@@ -1,0 +1,34 @@
+[Unit]
+Description=LED Animation Control System
+Documentation=https://github.com/yourusername/ledctl
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=gpio
+WorkingDirectory=/home/pi/ledctl
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+
+# Run with sudo for GPIO access
+ExecStart=/usr/bin/sudo /usr/bin/python3 /home/pi/ledctl/app.py
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+# Security options (adjust as needed)
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Resource limits
+LimitNOFILE=4096
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

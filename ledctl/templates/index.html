@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LED Animation Control System</title>
+    
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-dark">
+        <div class="container-fluid">
+            <span class="navbar-brand mb-0 h1">
+                <i class="fas fa-lightbulb"></i> LED Animation Control
+            </span>
+            <div class="d-flex align-items-center">
+                <span id="connection-status" class="badge bg-danger me-3">
+                    <i class="fas fa-circle"></i> Disconnected
+                </span>
+                <select id="device-selector" class="form-select form-select-sm" style="width: auto;">
+                    <option value="HUB75">HUB75 Matrix</option>
+                    <option value="WS2811_PI">WS2811 Strip</option>
+                    <option value="WLED">WLED (Network)</option>
+                </select>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid mt-3">
+        <div class="row">
+            <!-- Left Panel - File Management -->
+            <div class="col-md-3">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">Media Files</h5>
+                    </div>
+                    <div class="card-body">
+                        <!-- Upload Section -->
+                        <div class="mb-3">
+                            <label for="file-upload" class="form-label">Upload Animation</label>
+                            <input type="file" class="form-control" id="file-upload" 
+                                   accept=".gif,.png,.jpg,.jpeg,.mp4,.webm">
+                            <div class="progress mt-2 d-none" id="upload-progress">
+                                <div class="progress-bar" role="progressbar" style="width: 0%"></div>
+                            </div>
+                        </div>
+                        
+                        <!-- File List -->
+                        <div id="file-list" class="list-group">
+                            <!-- Files will be populated here -->
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Playlist Section -->
+                <div class="card mt-3">
+                    <div class="card-header">
+                        <h5 class="mb-0">Playlist</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="playlist" class="list-group">
+                            <!-- Playlist items here -->
+                        </div>
+                        <div class="mt-2">
+                            <button class="btn btn-sm btn-primary" id="btn-save-playlist">
+                                <i class="fas fa-save"></i> Save
+                            </button>
+                            <button class="btn btn-sm btn-secondary" id="btn-clear-playlist">
+                                <i class="fas fa-trash"></i> Clear
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Center Panel - Preview and Controls -->
+            <div class="col-md-6">
+                <!-- Preview -->
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">Preview</h5>
+                    </div>
+                    <div class="card-body text-center">
+                        <canvas id="preview-canvas" width="512" height="512" 
+                                style="max-width: 100%; background: #000; image-rendering: pixelated;">
+                        </canvas>
+                        <div class="mt-2">
+                            <span id="frame-info" class="text-muted">No animation loaded</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Playback Controls -->
+                <div class="card mt-3">
+                    <div class="card-body">
+                        <div class="row align-items-center">
+                            <div class="col-auto">
+                                <button id="btn-play" class="btn btn-success btn-lg">
+                                    <i class="fas fa-play"></i>
+                                </button>
+                                <button id="btn-stop" class="btn btn-danger btn-lg">
+                                    <i class="fas fa-stop"></i>
+                                </button>
+                            </div>
+                            <div class="col">
+                                <div class="row g-2">
+                                    <div class="col-12">
+                                        <label class="form-label mb-0">Speed</label>
+                                        <input type="range" class="form-range" id="speed-slider" 
+                                               min="0.1" max="3" step="0.1" value="1">
+                                        <span id="speed-value">1.0x</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Panel - Parameters -->
+            <div class="col-md-3">
+                <!-- Display Settings -->
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">Display Settings</h5>
+                    </div>
+                    <div class="card-body">
+                        <!-- Brightness -->
+                        <div class="mb-3">
+                            <label class="form-label">Brightness</label>
+                            <input type="range" class="form-range" id="brightness-slider" 
+                                   min="0" max="1" step="0.01" value="1">
+                            <span id="brightness-value">100%</span>
+                        </div>
+
+                        <!-- Gamma -->
+                        <div class="mb-3">
+                            <label class="form-label">Gamma</label>
+                            <input type="range" class="form-range" id="gamma-slider" 
+                                   min="0.5" max="3" step="0.1" value="2.2">
+                            <span id="gamma-value">2.2</span>
+                        </div>
+
+                        <!-- RGB Balance -->
+                        <div class="mb-3">
+                            <label class="form-label">RGB Balance</label>
+                            <div class="row g-1">
+                                <div class="col-4">
+                                    <label class="form-label small text-danger">Red</label>
+                                    <input type="range" class="form-range" id="red-balance" 
+                                           min="0" max="2" step="0.01" value="1">
+                                    <small id="red-value">1.00</small>
+                                </div>
+                                <div class="col-4">
+                                    <label class="form-label small text-success">Green</label>
+                                    <input type="range" class="form-range" id="green-balance" 
+                                           min="0" max="2" step="0.01" value="1">
+                                    <small id="green-value">1.00</small>
+                                </div>
+                                <div class="col-4">
+                                    <label class="form-label small text-primary">Blue</label>
+                                    <input type="range" class="form-range" id="blue-balance" 
+                                           min="0" max="2" step="0.01" value="1">
+                                    <small id="blue-value">1.00</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Transform Settings -->
+                <div class="card mt-3">
+                    <div class="card-header">
+                        <h5 class="mb-0">Transform</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="mirror-x">
+                            <label class="form-check-label" for="mirror-x">
+                                Mirror Horizontal
+                            </label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="mirror-y">
+                            <label class="form-check-label" for="mirror-y">
+                                Mirror Vertical
+                            </label>
+                        </div>
+                        <div class="mt-3">
+                            <label class="form-label">Rotation</label>
+                            <select class="form-select" id="rotation">
+                                <option value="0">0°</option>
+                                <option value="90">90°</option>
+                                <option value="180">180°</option>
+                                <option value="270">270°</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- System Info -->
+                <div class="card mt-3">
+                    <div class="card-header">
+                        <h5 class="mb-0">System Status</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="system-info">
+                            <p class="mb-1"><small>CPU: <span id="cpu-usage">--</span>%</small></p>
+                            <p class="mb-1"><small>Memory: <span id="memory-usage">--</span>%</small></p>
+                            <p class="mb-1"><small>Temp: <span id="temperature">--</span>°C</small></p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="{{ url_for('static', filename='main.js') }}"></script>
+</body>
+</html>

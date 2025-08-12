@@ -1,0 +1,12 @@
+flask==3.0.0
+flask-socketio==5.3.5
+python-socketio[client]==5.10.0
+eventlet==0.33.3
+Pillow==10.1.0
+opencv-python==4.8.1.78
+pyyaml==6.0.1
+numpy==1.24.3
+rpi-rgb-led-matrix==1.12.3
+rpi_ws281x==5.0.0
+requests==2.31.0
+werkzeug==3.0.1

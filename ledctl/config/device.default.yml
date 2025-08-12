@@ -1,0 +1,82 @@
+# LED Animation Control System Configuration
+# Default configuration for all supported LED hardware types
+
+# Active device type: HUB75 | WS2811_PI | WLED | MOCK
+device: HUB75
+
+# HUB75 LED Matrix Configuration
+hub75:
+  rows: 64                      # Matrix height in pixels
+  cols: 64                      # Matrix width in pixels
+  chain_length: 1               # Number of panels daisy-chained
+  parallel: 1                   # Number of parallel chains
+  hardware_mapping: "adafruit-hat"  # GPIO mapping type
+  gpio_slowdown: 2              # GPIO timing adjustment (1-4)
+  brightness: 85                # Initial brightness (0-100)
+  pwm_bits: 11                  # PWM resolution
+  pwm_lsb_nanoseconds: 130     # PWM timing
+  
+# WS2811 Addressable LED Configuration  
+ws2811:
+  width: 10                     # Grid width
+  height: 10                    # Grid height
+  count: 100                    # Total number of LEDs
+  gpio: 18                      # GPIO pin (18 for PWM0, 13 for PWM1)
+  brightness: 128               # Initial brightness (0-255)
+  pixel_order: "GRB"           # Pixel color order (RGB, RBG, GRB, GBR, BRG, BGR)
+  map_file: "config/ws2811.map.json"  # Pixel mapping file
+  freq_hz: 800000              # LED signal frequency
+  dma: 10                      # DMA channel
+  invert: false                # Invert signal (for level shifting)
+  channel: 0                   # PWM channel
+  
+# WLED ESP32 Network Configuration
+wled:
+  host: "192.168.1.50"         # WLED device IP address
+  port: 21324                  # WLED UDP port
+  timeout: 2.0                 # Connection timeout in seconds
+  protocol: "WARLS"            # Protocol: WARLS | DRGB | DNRGB
+  
+# Mock Device Configuration (for testing without hardware)
+mock:
+  width: 32                    # Virtual display width
+  height: 16                   # Virtual display height
+  
+# Rendering Configuration
+render:
+  scale: "LANCZOS"             # Scaling algorithm (NEAREST, LINEAR, CUBIC, LANCZOS)
+  fps_cap: 60                  # Maximum frames per second
+  gamma: 2.2                   # Gamma correction value
+  rgb_balance: [1.0, 1.0, 1.0] # RGB channel balance multipliers
+  mirror_x: false              # Horizontal mirroring
+  mirror_y: false              # Vertical mirroring
+  rotate: 0                    # Rotation in degrees (0, 90, 180, 270)
+  
+# Server Configuration
+server:
+  host: "0.0.0.0"             # Server bind address
+  port: 5000                  # Server port
+  debug: false                # Flask debug mode
+  upload_folder: "uploads"    # Media upload directory
+  max_upload_size: 104857600  # Max upload size in bytes (100MB)
+  allowed_extensions:
+    - "gif"
+    - "png"
+    - "jpg"
+    - "jpeg"
+    - "mp4"
+    - "webm"
+    
+# Logging Configuration
+logging:
+  level: "INFO"               # Log level (DEBUG, INFO, WARNING, ERROR)
+  file: "ledctl.log"          # Log file path
+  max_size: 10485760          # Max log size in bytes (10MB)
+  backup_count: 5             # Number of log backups to keep
+  
+# System Monitoring
+monitoring:
+  enable: true                # Enable system monitoring
+  interval: 60                # Monitoring interval in seconds
+  temperature_warning: 70     # Temperature warning threshold (Celsius)
+  temperature_critical: 80    # Temperature critical threshold (Celsius)
