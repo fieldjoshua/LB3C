@@ -11,3 +11,7 @@ rpi_ws281x==5.0.0
 requests==2.31.0
 werkzeug==3.0.1
 python-dotenv==1.0.0
+flask-limiter==3.5.0
+flask-cors==4.0.0
+marshmallow==3.20.1
+redis==5.0.1

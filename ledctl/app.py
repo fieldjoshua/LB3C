@@ -34,6 +34,11 @@ from core.errors import (
     register_error_handlers, DeviceError, AnimationError, 
     FileProcessingError, safe_execute, emit_error
 )
+from core.security import (
+    setup_security, limiter, validate_input, require_api_key,
+    sanitize_path, validate_file_type, FileUploadSchema,
+    DeviceConfigSchema, AnimationControlSchema, ParameterUpdateSchema
+)
 
 # Try to import hardware drivers (may fail on non-Pi systems)
 try:
@@ -96,6 +101,16 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
 # Register error handlers
 register_error_handlers(app, socketio)
+
+# Setup security features
+setup_security(app, socketio)
+
+# Register API blueprint
+from api.routes import api_bp
+app.register_blueprint(api_bp)
+
+# Track app start time for uptime
+app.start_time = time.time()
 
 # Global state
 class AppState:
@@ -251,6 +266,8 @@ def api_status():
 
 
 @app.route('/api/files')
+@limiter.limit("100 per minute")
+@require_api_key
 def api_files():
     """List uploaded files"""
     upload_dir = config.upload['folder']
@@ -272,6 +289,8 @@ def api_files():
 
 
 @app.route('/api/upload', methods=['POST'])
+@limiter.limit(os.getenv('RATE_LIMIT_UPLOAD', '10 per hour'))
+@require_api_key
 def api_upload():
     """Handle file upload"""
     try:
@@ -284,9 +303,13 @@ def api_upload():
             
         # Sanitize filename
         original_filename = file.filename
-        filename = secure_filename(original_filename)
+        filename = sanitize_path(original_filename)
         if not filename:
             raise FileProcessingError('Invalid filename', filename=original_filename)
+            
+        # Additional validation
+        if not FileUploadSchema.validate_filename(filename):
+            raise FileProcessingError('Invalid filename format', filename=original_filename)
             
         # Check file extension
         ext = os.path.splitext(filename)[1].lower()[1:]  # Remove the dot
@@ -395,8 +418,15 @@ def handle_stop():
 @socketio.on('set_parameter')
 def handle_set_parameter(data):
     """Update playback parameter"""
-    param = data.get('parameter')
-    value = data.get('value')
+    # Validate input
+    try:
+        schema = ParameterUpdateSchema()
+        validated = schema.load(data)
+        param = validated['parameter']
+        value = validated['value']
+    except ValidationError as e:
+        emit('error', {'message': 'Invalid parameter data', 'details': e.messages})
+        return
     
     if param in state.params:
         state.params[param] = value
@@ -419,9 +449,17 @@ def handle_set_parameter(data):
 
 
 @socketio.on('switch_device')
+@limiter.limit(os.getenv('RATE_LIMIT_DEVICE_SWITCH', '30 per hour'))
 def handle_switch_device(data):
     """Switch to different LED hardware"""
-    device_type = data.get('device_type')
+    # Validate input
+    try:
+        schema = DeviceConfigSchema()
+        validated = schema.load(data)
+        device_type = validated['device_type']
+    except ValidationError as e:
+        emit('error', {'message': 'Invalid device configuration', 'details': e.messages})
+        return
     
     if device_type not in ['HUB75', 'WS2811_PI', 'WLED', 'MOCK']:
         emit('error', {'message': f'Unknown device type: {device_type}'})
