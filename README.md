@@ -1,4 +1,4 @@
-# LightBox3 LED Animation Control System
+# LB3C - LED Animation Control System
 
 A unified web-based control system for multiple LED hardware types including HUB75 matrices, WS2811 strips, and WLED/ESP32 devices.
 
@@ -27,8 +27,8 @@ A unified web-based control system for multiple LED hardware types including HUB
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/lightbox3.git
-cd lightbox3
+git clone https://github.com/fieldjoshua/LB3C.git
+cd LB3C
 
 # Install dependencies
 cd ledctl
@@ -77,7 +77,7 @@ Access the web interface at `http://<raspberry-pi-ip>:5000`
 ## Project Structure
 
 ```
-lightbox3/
+LB3C/
 ├── ledctl/                # Main application
 │   ├── app.py            # Flask server
 │   ├── core/             # Core modules
