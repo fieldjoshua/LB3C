@@ -56,7 +56,14 @@ class Config:
         self.hardware = self._get_hardware_config()
         
         # Device-specific configuration from YAML
-        self.device = self.yaml_config.get('device', {})
+        device_config = self.yaml_config.get('device', 'MOCK')
+        # Handle device as string or dict
+        if isinstance(device_config, str):
+            self.device = {'type': device_config}
+        elif isinstance(device_config, dict):
+            self.device = device_config
+        else:
+            self.device = {'type': 'MOCK'}
         self.render = self.yaml_config.get('render', {})
         
     def _load_yaml_config(self) -> Dict[str, Any]:
@@ -131,7 +138,7 @@ class Config:
             'max_size': int(os.getenv('MAX_UPLOAD_SIZE', yaml_server.get('upload_max_size', 104857600))),
             'allowed_extensions': os.getenv(
                 'ALLOWED_EXTENSIONS',
-                yaml_server.get('upload_extensions', 'gif,png,jpg,jpeg,mp4,avi,mov')
+                yaml_server.get('allowed_extensions', 'gif,png,jpg,jpeg,mp4,avi,mov')
             ).split(','),
             'folder': yaml_server.get('upload_folder', 'uploads'),
         }
@@ -160,8 +167,9 @@ class Config:
             upload_folder.mkdir(parents=True, exist_ok=True)
             
         # Validate device configuration
-        if not self.device.get('type'):
+        if not self.device or not self.device.get('type'):
             raise ConfigurationError("Device type must be specified in configuration")
             
     def __repr__(self) -> str:
-        return f"<Config env={self.flask['ENV']} device={self.device.get('type', 'unknown')}>"
+        device_type = self.device.get('type', 'unknown') if isinstance(self.device, dict) else 'unknown'
+        return f"<Config env={self.flask['ENV']} device={device_type}>"
