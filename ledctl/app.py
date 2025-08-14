@@ -274,11 +274,21 @@ def index():
 @app.route('/api/status')
 def api_status():
     """Get system status"""
+    # Get current animation info
+    current_animation_info = None
+    if state.current_animation:
+        if hasattr(state.current_animation, 'source'):
+            # File-based animation
+            current_animation_info = {'type': 'file', 'source': state.current_animation.source}
+        else:
+            # Procedural animation
+            current_animation_info = {'type': 'automation', 'name': state.current_animation.__class__.__name__}
+    
     return jsonify({
         'device_type': state.config.get('device') if state.config else None,
         'device_connected': state.device is not None,
         'is_playing': state.is_playing,
-        'current_file': state.current_animation.source if state.current_animation else None,
+        'current_animation': current_animation_info,
         'parameters': state.params
     })
 
