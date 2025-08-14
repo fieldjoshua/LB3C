@@ -36,12 +36,21 @@ def get_redis_connection():
 
 
 # Initialize rate limiter
-limiter = Limiter(
-    key_func=get_remote_address,
-    default_limits=["200 per hour", "50 per minute"],
-    storage_backend=get_redis_connection(),
-    swallow_errors=True  # Don't fail if rate limiting backend is down
-)
+redis_conn = get_redis_connection()
+if redis_conn:
+    limiter = Limiter(
+        key_func=get_remote_address,
+        default_limits=["200 per hour", "50 per minute"],
+        storage_uri=f"redis://localhost:6379",
+        swallow_errors=True  # Don't fail if rate limiting backend is down
+    )
+else:
+    limiter = Limiter(
+        key_func=get_remote_address,
+        default_limits=["200 per hour", "50 per minute"],
+        storage_uri="memory://",
+        swallow_errors=True  # Don't fail if rate limiting backend is down
+    )
 
 
 # Input validation schemas
