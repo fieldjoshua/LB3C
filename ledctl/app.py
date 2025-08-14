@@ -28,6 +28,13 @@ from marshmallow import ValidationError
 # Add project root to Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Create a temporary logger for import messages
+import_logger = logging.getLogger('imports')
+import_logger.setLevel(logging.WARNING)
+import_handler = logging.StreamHandler()
+import_handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+import_logger.addHandler(import_handler)
+
 from core.config import Config, ConfigurationError
 from core.drivers import DeviceManager
 from core.drivers.mock import MockDevice
@@ -45,19 +52,19 @@ from core.security import (
 try:
     from core.drivers.hub75 import HUB75Device
 except ImportError as e:
-    logger.warning(f"Could not import HUB75 driver: {e}")
+    import_logger.warning(f"Could not import HUB75 driver: {e}")
     HUB75Device = None
 
 try:
     from core.drivers.ws2811_pi import WS2811Device
 except ImportError as e:
-    logger.warning(f"Could not import WS2811 driver: {e}")
+    import_logger.warning(f"Could not import WS2811 driver: {e}")
     WS2811Device = None
 
 try:
     from core.drivers.wled_udp import WLEDDevice
 except ImportError as e:
-    logger.warning(f"Could not import WLED driver: {e}")
+    import_logger.warning(f"Could not import WLED driver: {e}")
     WLEDDevice = None
 from core.frames import FrameProcessor, MediaAnimation
 from core.gamma import GammaCorrector, create_corrector
