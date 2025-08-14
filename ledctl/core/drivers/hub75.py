@@ -38,6 +38,8 @@ class HUB75Device(OutputDevice):
         self.brightness = hub75_config.get('brightness', 100)
         self.pwm_bits = hub75_config.get('pwm_bits', 11)
         self.pwm_lsb_nanoseconds = hub75_config.get('pwm_lsb_nanoseconds', 130)
+        self.limit_refresh_rate_hz = hub75_config.get('limit_refresh_rate_hz', 0)
+        self.show_refresh_rate = hub75_config.get('show_refresh_rate', False)
         
         # Set dimensions
         self.width = self.cols * self.chain_length
@@ -65,8 +67,10 @@ class HUB75Device(OutputDevice):
             self.options.pwm_lsb_nanoseconds = self.pwm_lsb_nanoseconds
             
             # Additional options that might be needed
-            self.options.show_refresh_rate = False
+            self.options.show_refresh_rate = self.show_refresh_rate
             self.options.disable_hardware_pulsing = False
+            if self.limit_refresh_rate_hz > 0:
+                self.options.limit_refresh_rate_hz = self.limit_refresh_rate_hz
             
             # Create matrix instance
             self.matrix = RGBMatrix(options=self.options)

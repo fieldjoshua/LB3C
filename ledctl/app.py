@@ -528,6 +528,54 @@ def handle_set_parameter(data):
         emit('error', {'message': f'Unknown parameter: {param}'})
 
 
+@socketio.on('update_hardware_settings')
+@limiter.limit("10 per hour")
+def handle_update_hardware_settings(data):
+    """Update HUB75 hardware settings"""
+    if state.config.get('device') != 'HUB75':
+        emit('error', {'message': 'Hardware settings only available for HUB75'})
+        return
+        
+    try:
+        # Update configuration
+        hub75_config = state.config.get('hub75', {})
+        
+        if 'gpio_slowdown' in data:
+            hub75_config['gpio_slowdown'] = max(1, min(4, int(data['gpio_slowdown'])))
+        if 'pwm_bits' in data:
+            hub75_config['pwm_bits'] = max(8, min(12, int(data['pwm_bits'])))
+        if 'pwm_lsb_nanoseconds' in data:
+            hub75_config['pwm_lsb_nanoseconds'] = max(50, min(300, int(data['pwm_lsb_nanoseconds'])))
+        if 'limit_refresh_rate_hz' in data:
+            hub75_config['limit_refresh_rate_hz'] = max(30, min(200, int(data['limit_refresh_rate_hz'])))
+        if 'show_refresh_rate' in data:
+            hub75_config['show_refresh_rate'] = bool(data['show_refresh_rate'])
+            
+        state.config['hub75'] = hub75_config
+        
+        # Reinitialize the device with new settings
+        logger.info(f"Updating HUB75 hardware settings: {data}")
+        
+        # Stop current playback
+        old_playing = state.is_playing
+        state.is_playing = False
+        
+        # Reinitialize device
+        if initialize_device('HUB75', state.config):
+            emit('hardware_settings_updated', hub75_config)
+            emit('success', {'message': 'Hardware settings applied successfully'})
+            
+            # Resume playback if it was playing
+            if old_playing and state.current_animation:
+                state.is_playing = True
+        else:
+            emit('error', {'message': 'Failed to apply hardware settings'})
+            
+    except Exception as e:
+        logger.error(f"Hardware settings update error: {e}")
+        emit('error', {'message': f'Failed to update settings: {str(e)}'})
+
+
 @socketio.on('switch_device')
 @limiter.limit(os.getenv('RATE_LIMIT_DEVICE_SWITCH', '30 per hour'))
 def handle_switch_device(data):

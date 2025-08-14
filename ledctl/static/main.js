@@ -86,6 +86,16 @@ function updateConnectionStatus(connected) {
     }
 }
 
+// Show/hide HUB75 settings based on device type
+function updateDeviceSettings(deviceType) {
+    const hub75Settings = document.getElementById('hub75-settings');
+    if (deviceType === 'HUB75') {
+        hub75Settings.style.display = 'block';
+    } else {
+        hub75Settings.style.display = 'none';
+    }
+}
+
 // Load file list from server
 async function loadFileList() {
     try {
@@ -119,6 +129,7 @@ async function loadStatus() {
         // Update device selector
         if (data.device_type) {
             document.getElementById('device-selector').value = data.device_type;
+            updateDeviceSettings(data.device_type);
         }
         
         // Update parameters
@@ -322,6 +333,25 @@ function playFile(filename) {
     }
     
     state.socket.emit('play', { type: 'file', filename: filename });
+}
+
+// Apply HUB75 hardware settings
+function applyHardwareSettings() {
+    if (!state.connected) {
+        showError('Not connected to server');
+        return;
+    }
+    
+    const settings = {
+        gpio_slowdown: parseInt(document.getElementById('gpio-slowdown').value),
+        pwm_bits: parseInt(document.getElementById('pwm-bits').value),
+        pwm_lsb_nanoseconds: parseInt(document.getElementById('pwm-lsb-ns').value),
+        limit_refresh_rate_hz: parseInt(document.getElementById('refresh-rate-limit').value),
+        show_refresh_rate: document.getElementById('show-refresh-rate').checked
+    };
+    
+    state.socket.emit('update_hardware_settings', settings);
+    showInfo('Applying hardware settings...');
 }
 
 // Stop playback
@@ -582,6 +612,25 @@ function initializeEventHandlers() {
     
     // Automation controls
     document.getElementById('btn-play-automation').addEventListener('click', playAutomation);
+    
+    // HUB75 Hardware controls
+    document.getElementById('gpio-slowdown').addEventListener('input', (e) => {
+        document.getElementById('gpio-slowdown-value').textContent = e.target.value;
+    });
+    
+    document.getElementById('pwm-bits').addEventListener('input', (e) => {
+        document.getElementById('pwm-bits-value').textContent = e.target.value + ' bits';
+    });
+    
+    document.getElementById('pwm-lsb-ns').addEventListener('input', (e) => {
+        document.getElementById('pwm-lsb-value').textContent = e.target.value + ' ns';
+    });
+    
+    document.getElementById('refresh-rate-limit').addEventListener('input', (e) => {
+        document.getElementById('refresh-rate-value').textContent = e.target.value + ' Hz';
+    });
+    
+    document.getElementById('btn-apply-hardware').addEventListener('click', applyHardwareSettings);
 }
 
 // Initialize on page load
