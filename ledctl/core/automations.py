@@ -184,7 +184,7 @@ class Matrix(ProceduralAnimation):
             
             for i in range(self.trail_length):
                 y = drop_y - i
-                if 0 <= y < self.height:
+                if 0 <= y < self.height and 0 <= x < self.width:
                     brightness = 1.0 - (i / self.trail_length)
                     brightness *= brightness  # Exponential falloff
                     
