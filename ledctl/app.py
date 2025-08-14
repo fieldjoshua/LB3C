@@ -19,6 +19,8 @@ import yaml
 import time
 import threading
 import argparse
+import signal
+import atexit
 from flask import Flask, render_template, request, jsonify, send_from_directory
 from flask_socketio import SocketIO, emit
 from werkzeug.utils import secure_filename
@@ -638,11 +640,42 @@ def main():
     socketio.run(app, host=config.server['host'], port=config.server['port'], debug=config.flask['DEBUG'])
 
 
+def cleanup():
+    """Clean shutdown handler"""
+    logger.info("Shutting down...")
+    state.stop_event.set()
+    
+    # Wait for playback thread to stop
+    if hasattr(state, 'playback_thread') and state.playback_thread and state.playback_thread.is_alive():
+        state.playback_thread.join(timeout=5.0)
+    
+    # Close device
+    if state.device:
+        try:
+            state.device.close()
+        except Exception as e:
+            logger.error(f"Error closing device: {e}")
+    
+    logger.info("Shutdown complete")
+
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals"""
+    cleanup()
+    sys.exit(0)
+
+
 if __name__ == '__main__':
+    # Register cleanup handlers
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    atexit.register(cleanup)
+    
     try:
         main()
     except KeyboardInterrupt:
-        logger.info("Shutting down...")
-        state.stop_event.set()
-        if state.device:
-            state.device.close()
+        pass  # Handled by signal handler
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
+        cleanup()
+        sys.exit(1)
