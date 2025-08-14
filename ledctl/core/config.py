@@ -134,12 +134,20 @@ class Config:
     def _get_upload_config(self) -> Dict[str, Any]:
         """Get upload configuration."""
         yaml_server = self.yaml_config.get('server', {})
+        
+        # Handle allowed_extensions as either string or list
+        allowed_ext = yaml_server.get('allowed_extensions', ['gif','png','jpg','jpeg','mp4','avi','mov'])
+        if isinstance(allowed_ext, str):
+            allowed_ext = allowed_ext.split(',')
+        
+        # Check environment variable override
+        env_extensions = os.getenv('ALLOWED_EXTENSIONS')
+        if env_extensions:
+            allowed_ext = env_extensions.split(',')
+            
         return {
             'max_size': int(os.getenv('MAX_UPLOAD_SIZE', yaml_server.get('upload_max_size', 104857600))),
-            'allowed_extensions': os.getenv(
-                'ALLOWED_EXTENSIONS',
-                yaml_server.get('allowed_extensions', 'gif,png,jpg,jpeg,mp4,avi,mov')
-            ).split(','),
+            'allowed_extensions': allowed_ext,
             'folder': yaml_server.get('upload_folder', 'uploads'),
         }
     
