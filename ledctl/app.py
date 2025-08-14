@@ -23,6 +23,7 @@ from flask import Flask, render_template, request, jsonify, send_from_directory
 from flask_socketio import SocketIO, emit
 from werkzeug.utils import secure_filename
 from logging.handlers import RotatingFileHandler
+from marshmallow import ValidationError
 
 # Add project root to Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -60,6 +61,7 @@ except ImportError as e:
     WLEDDevice = None
 from core.frames import FrameProcessor, MediaAnimation
 from core.gamma import GammaCorrector, create_corrector
+from core.automations import create_automation, get_automation_info, AUTOMATION_REGISTRY
 
 # Initialize configuration
 try:
@@ -104,10 +106,6 @@ register_error_handlers(app, socketio)
 
 # Setup security features
 setup_security(app, socketio)
-
-# Register API blueprint
-from api.routes import api_bp
-app.register_blueprint(api_bp)
 
 # Track app start time for uptime
 app.start_time = time.time()
@@ -215,8 +213,13 @@ def playback_worker():
                 # Adjust for speed parameter
                 delta_time *= state.params['speed']
                 
-                # Get next frame
-                frame = state.current_animation.get_next_frame(delta_time)
+                # Get next frame based on animation type
+                if hasattr(state.current_animation, 'update'):
+                    # ProceduralAnimation
+                    frame = state.current_animation.update(delta_time)
+                else:
+                    # MediaAnimation
+                    frame = state.current_animation.get_next_frame(delta_time)
                 
                 # Apply gamma correction and RGB balance
                 if state.gamma_corrector:
@@ -230,10 +233,18 @@ def playback_worker():
                 state.device.draw_rgb_frame(w, h, rgb_data)
                 
                 # Emit frame info to clients
-                socketio.emit('frame_info', {
-                    'current_frame': state.current_animation.current_frame,
-                    'total_frames': state.current_animation.frame_count
-                })
+                if hasattr(state.current_animation, 'current_frame'):
+                    # MediaAnimation has frame count info
+                    socketio.emit('frame_info', {
+                        'current_frame': state.current_animation.current_frame,
+                        'total_frames': state.current_animation.frame_count
+                    })
+                else:
+                    # ProceduralAnimation - emit time info
+                    socketio.emit('frame_info', {
+                        'time': state.current_animation.time,
+                        'type': 'procedural'
+                    })
                 
             except Exception as e:
                 logger.error(f"Playback error: {e}")
@@ -286,6 +297,13 @@ def api_files():
             })
             
     return jsonify({'files': files})
+
+
+@app.route('/api/automations')
+@limiter.limit("100 per minute")
+def api_automations():
+    """Get available automations and their parameters"""
+    return jsonify(get_automation_info())
 
 
 @app.route('/api/upload', methods=['POST'])
@@ -372,30 +390,72 @@ def handle_disconnect():
 
 @socketio.on('play')
 def handle_play(data):
-    """Start playing animation"""
-    filename = data.get('filename')
-    if not filename:
-        emit('error', {'message': 'No filename provided'})
-        return
-        
-    upload_dir = config.upload['folder']
-    filepath = os.path.join(upload_dir, filename)
+    """Start playing animation or automation"""
+    animation_type = data.get('type', 'file')
     
-    if not os.path.exists(filepath):
-        emit('error', {'message': 'File not found'})
-        return
+    if animation_type == 'file':
+        # Play file-based animation
+        filename = data.get('filename')
+        if not filename:
+            emit('error', {'message': 'No filename provided'})
+            return
+            
+        upload_dir = config.upload['folder']
+        filepath = os.path.join(upload_dir, filename)
         
-    # Load animation
-    animation = state.frame_processor.load_media(filepath)
-    if not animation:
-        emit('error', {'message': 'Failed to load animation'})
-        return
+        if not os.path.exists(filepath):
+            emit('error', {'message': 'File not found'})
+            return
+            
+        # Load animation
+        animation = state.frame_processor.load_media(filepath)
+        if not animation:
+            emit('error', {'message': 'Failed to load animation'})
+            return
+            
+        state.current_animation = animation
+        state.is_playing = True
         
-    state.current_animation = animation
-    state.is_playing = True
+        emit('playing', {'type': 'file', 'filename': filename})
+        logger.info(f"Playing file: {filename}")
+        
+    elif animation_type == 'automation':
+        # Play procedural automation
+        automation_name = data.get('automation')
+        if not automation_name:
+            emit('error', {'message': 'No automation name provided'})
+            return
+            
+        if automation_name not in AUTOMATION_REGISTRY:
+            emit('error', {'message': f'Unknown automation: {automation_name}'})
+            return
+            
+        # Get device dimensions
+        if not state.device:
+            emit('error', {'message': 'No device connected'})
+            return
+            
+        width, height = state.device.get_dimensions()
+        
+        # Get automation parameters
+        params = data.get('params', {})
+        
+        try:
+            # Create automation instance
+            automation = create_automation(automation_name, width, height, 
+                                         fps=config.render['fps'], **params)
+            state.current_animation = automation
+            state.is_playing = True
+            
+            emit('playing', {'type': 'automation', 'automation': automation_name, 'params': params})
+            logger.info(f"Playing automation: {automation_name}")
+            
+        except Exception as e:
+            emit('error', {'message': f'Failed to create automation: {str(e)}'})
+            logger.error(f"Automation creation error: {e}")
     
-    emit('playing', {'filename': filename})
-    logger.info(f"Playing: {filename}")
+    else:
+        emit('error', {'message': f'Unknown animation type: {animation_type}'})
 
 
 @socketio.on('stop')
@@ -523,6 +583,14 @@ def main():
     
     # Register device types
     register_devices()
+    
+    # Register API blueprint
+    try:
+        from api.routes import api_bp
+        app.register_blueprint(api_bp)
+        logger.info("API v1 endpoints registered")
+    except ImportError as e:
+        logger.warning(f"Could not load API routes: {e}")
     
     # Load YAML configuration for device settings
     state.config = load_config(args.config or config.config_path)

@@ -17,7 +17,9 @@ const state = {
     files: [],
     playlist: [],
     previewCanvas: null,
-    previewCtx: null
+    previewCtx: null,
+    automations: {},
+    currentAutomation: null
 };
 
 // Initialize Socket.IO connection
@@ -29,6 +31,7 @@ function initializeSocket() {
         state.connected = true;
         updateConnectionStatus(true);
         loadFileList();
+        loadAutomations();
         loadStatus();
     });
     
@@ -44,7 +47,11 @@ function initializeSocket() {
     
     state.socket.on('playing', (data) => {
         state.isPlaying = true;
-        state.currentFile = data.filename;
+        if (data.type === 'file') {
+            state.currentFile = data.filename;
+        } else if (data.type === 'automation') {
+            state.currentAutomation = data.automation;
+        }
         updatePlaybackControls();
     });
     
@@ -88,6 +95,18 @@ async function loadFileList() {
         renderFileList();
     } catch (error) {
         console.error('Failed to load files:', error);
+    }
+}
+
+// Load available automations
+async function loadAutomations() {
+    try {
+        const response = await fetch('/api/automations');
+        const data = await response.json();
+        state.automations = data;
+        renderAutomationList();
+    } catch (error) {
+        console.error('Failed to load automations:', error);
     }
 }
 
@@ -170,6 +189,131 @@ function renderFileList() {
     });
 }
 
+// Render automation list
+function renderAutomationList() {
+    const selectEl = document.getElementById('automation-select');
+    selectEl.innerHTML = '<option value="">-- Choose Automation --</option>';
+    
+    Object.entries(state.automations).forEach(([key, info]) => {
+        const option = document.createElement('option');
+        option.value = key;
+        option.textContent = info.description || info.class;
+        selectEl.appendChild(option);
+    });
+    
+    selectEl.addEventListener('change', onAutomationSelected);
+}
+
+// Handle automation selection
+function onAutomationSelected(e) {
+    const automationName = e.target.value;
+    const paramsEl = document.getElementById('automation-params');
+    const playBtn = document.getElementById('btn-play-automation');
+    
+    if (!automationName) {
+        paramsEl.innerHTML = '';
+        playBtn.disabled = true;
+        return;
+    }
+    
+    const automation = state.automations[automationName];
+    paramsEl.innerHTML = '';
+    
+    // Render parameter controls
+    Object.entries(automation.parameters).forEach(([paramName, paramInfo]) => {
+        const div = document.createElement('div');
+        div.className = 'mb-2';
+        
+        const label = document.createElement('label');
+        label.className = 'form-label text-capitalize';
+        label.textContent = paramName.replace(/_/g, ' ');
+        div.appendChild(label);
+        
+        if (paramInfo.type === 'float') {
+            const input = document.createElement('input');
+            input.type = 'range';
+            input.className = 'form-range';
+            input.id = `auto-param-${paramName}`;
+            input.step = '0.1';
+            input.min = '0';
+            input.max = '10';
+            input.value = paramInfo.default || '1';
+            
+            const valueSpan = document.createElement('span');
+            valueSpan.className = 'ms-2';
+            valueSpan.textContent = input.value;
+            
+            input.addEventListener('input', () => {
+                valueSpan.textContent = input.value;
+            });
+            
+            div.appendChild(input);
+            div.appendChild(valueSpan);
+            
+        } else if (paramInfo.type === 'bool') {
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.className = 'form-check-input';
+            input.id = `auto-param-${paramName}`;
+            input.checked = paramInfo.default || false;
+            
+            const checkDiv = document.createElement('div');
+            checkDiv.className = 'form-check';
+            checkDiv.appendChild(input);
+            
+            const checkLabel = document.createElement('label');
+            checkLabel.className = 'form-check-label';
+            checkLabel.htmlFor = input.id;
+            checkLabel.textContent = paramName.replace(/_/g, ' ');
+            checkDiv.appendChild(checkLabel);
+            
+            div.innerHTML = '';
+            div.appendChild(checkDiv);
+            
+        } else if (paramInfo.type === 'int') {
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.className = 'form-control';
+            input.id = `auto-param-${paramName}`;
+            input.value = paramInfo.default || '1';
+            div.appendChild(input);
+        }
+        
+        paramsEl.appendChild(div);
+    });
+    
+    playBtn.disabled = false;
+}
+
+// Play automation
+function playAutomation() {
+    const automationName = document.getElementById('automation-select').value;
+    if (!automationName || !state.connected) return;
+    
+    const automation = state.automations[automationName];
+    const params = {};
+    
+    // Collect parameter values
+    Object.keys(automation.parameters).forEach(paramName => {
+        const input = document.getElementById(`auto-param-${paramName}`);
+        if (input) {
+            if (input.type === 'checkbox') {
+                params[paramName] = input.checked;
+            } else if (input.type === 'number') {
+                params[paramName] = parseInt(input.value);
+            } else {
+                params[paramName] = parseFloat(input.value);
+            }
+        }
+    });
+    
+    state.socket.emit('play', {
+        type: 'automation',
+        automation: automationName,
+        params: params
+    });
+}
+
 // Play file
 function playFile(filename) {
     if (!state.connected) {
@@ -177,7 +321,7 @@ function playFile(filename) {
         return;
     }
     
-    state.socket.emit('play', { filename: filename });
+    state.socket.emit('play', { type: 'file', filename: filename });
 }
 
 // Stop playback
@@ -435,6 +579,9 @@ function initializeEventHandlers() {
         state.playlist = [];
         renderPlaylist();
     });
+    
+    // Automation controls
+    document.getElementById('btn-play-automation').addEventListener('click', playAutomation);
 }
 
 // Initialize on page load
