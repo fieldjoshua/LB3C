@@ -449,8 +449,9 @@ def handle_play(data):
         
         try:
             # Create automation instance
+            fps = state.config.get('render', {}).get('fps_cap', 30)
             automation = create_automation(automation_name, width, height, 
-                                         fps=config.render['fps'], **params)
+                                         fps=fps, **params)
             state.current_animation = automation
             state.is_playing = True
             
