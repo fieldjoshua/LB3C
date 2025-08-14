@@ -617,7 +617,7 @@ def main():
     # Run Flask app
     logger.info(f"Starting server on {config.server['host']}:{config.server['port']}")
     logger.info(f"Environment: {config.flask['ENV']}")
-    socketio.run(app, host=config.server['host'], port=config.server['port'], debug=config.flask['DEBUG']}
+    socketio.run(app, host=config.server['host'], port=config.server['port'], debug=config.flask['DEBUG'])
 
 
 if __name__ == '__main__':
