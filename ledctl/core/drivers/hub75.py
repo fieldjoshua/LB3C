@@ -70,6 +70,7 @@ class HUB75Device(OutputDevice):
             
             # Create matrix instance
             self.matrix = RGBMatrix(options=self.options)
+            self.offscreen_canvas = self.matrix.CreateFrameCanvas()
             self.is_open = True
             
             logger.info(f"HUB75 matrix opened: {self.width}x{self.height} "
@@ -131,16 +132,21 @@ class HUB75Device(OutputDevice):
             
         # Draw to matrix
         try:
-            offset = self.matrix.CreateFrameCanvas()
+            # Clear the offscreen canvas
+            self.offscreen_canvas.Clear()
             
             for y in range(self.height):
                 for x in range(self.width):
                     idx = y * self.width + x
                     if idx < len(scaled_data):
                         r, g, b = scaled_data[idx]
-                        offset.SetPixel(x, y, r, g, b)
+                        # Clamp values to 0-255 to prevent overflow
+                        r = max(0, min(255, int(r)))
+                        g = max(0, min(255, int(g)))
+                        b = max(0, min(255, int(b)))
+                        self.offscreen_canvas.SetPixel(x, y, r, g, b)
                         
-            self.matrix.SwapOnVSync(offset)
+            self.offscreen_canvas = self.matrix.SwapOnVSync(self.offscreen_canvas)
             
         except Exception as e:
             logger.error(f"Error drawing to HUB75 matrix: {e}")

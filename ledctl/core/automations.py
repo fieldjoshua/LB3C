@@ -133,7 +133,9 @@ class Fire(ProceduralAnimation):
             for x in range(self.width):
                 heat_val = self.heat[y, x]
                 
-                # Heat color mapping
+                # Heat color mapping (clamp heat_val to 0-1)
+                heat_val = max(0.0, min(1.0, heat_val))
+                
                 if heat_val < 0.33:
                     # Black to red
                     r = int(heat_val * 3 * 255)
@@ -148,7 +150,7 @@ class Fire(ProceduralAnimation):
                     # Yellow to white
                     r = 255
                     g = 255
-                    b = int((heat_val - 0.66) * 3 * 255)
+                    b = min(255, int((heat_val - 0.66) * 3 * 255))
                     
                 frame[self.height - 1 - y, x] = [r, g, b]  # Flip vertically
                 
