@@ -130,6 +130,8 @@ class AppState:
         self.is_playing = False
         self.playback_thread = None
         self.stop_event = threading.Event()
+        # Lock to coordinate rendering and device (re)initialization
+        self.render_lock = threading.RLock()
         self.params = {
             'brightness': 1.0,
             'speed': 1.0,
@@ -156,39 +158,41 @@ def initialize_device(device_type, config):
     """Initialize LED output device"""
     try:
         # Close existing device if any
-        if state.device:
-            try:
-                state.device.close()
-            except Exception as e:
-                logger.warning(f"Error closing previous device: {e}")
+        with state.render_lock:
+            if state.device:
+                try:
+                    state.device.close()
+                except Exception as e:
+                    logger.warning(f"Error closing previous device: {e}")
             
         # Get device-specific config
         device_config = config.copy()
         
-        # Create device
-        try:
-            device = DeviceManager.create_device(device_type, device_config)
-        except Exception as e:
-            raise DeviceError(f"Failed to create {device_type} device: {str(e)}", device_type=device_type)
-        
-        try:
-            device.open()
-        except Exception as e:
-            raise DeviceError(f"Failed to open {device_type} device: {str(e)}", device_type=device_type)
-        
-        # Create frame processor
-        try:
-            width, height = device.get_dimensions()
-            state.frame_processor = FrameProcessor(width, height, config)
-        except Exception as e:
-            device.close()
-            raise DeviceError(f"Failed to create frame processor: {str(e)}", device_type=device_type)
-        
-        # Create gamma corrector
-        state.gamma_corrector = create_corrector(config)
-        state.gamma_corrector.set_brightness(state.params['brightness'])
-        
-        state.device = device
+        # Create and open device under lock to avoid races with rendering
+        with state.render_lock:
+            try:
+                device = DeviceManager.create_device(device_type, device_config)
+            except Exception as e:
+                raise DeviceError(f"Failed to create {device_type} device: {str(e)}", device_type=device_type)
+            
+            try:
+                device.open()
+            except Exception as e:
+                raise DeviceError(f"Failed to open {device_type} device: {str(e)}", device_type=device_type)
+            
+            # Create frame processor
+            try:
+                width, height = device.get_dimensions()
+                state.frame_processor = FrameProcessor(width, height, config)
+            except Exception as e:
+                device.close()
+                raise DeviceError(f"Failed to create frame processor: {str(e)}", device_type=device_type)
+            
+            # Create gamma corrector
+            state.gamma_corrector = create_corrector(config)
+            state.gamma_corrector.set_brightness(state.params['brightness'])
+            
+            state.device = device
         logger.info(f"Initialized {device_type} device: {width}x{height}")
         
         # Emit success to clients
@@ -248,9 +252,10 @@ def playback_worker():
                 # Convert to RGB list
                 rgb_data = state.current_animation.to_rgb_list(frame)
                 
-                # Send to device
+                # Send to device (prevent races with device re-init)
                 h, w = frame.shape[:2]
-                state.device.draw_rgb_frame(w, h, rgb_data)
+                with state.render_lock:
+                    state.device.draw_rgb_frame(w, h, rgb_data)
                 
                 # Emit frame info less frequently to reduce overhead
                 frame_count += 1
@@ -580,19 +585,15 @@ def handle_update_hardware_settings(data):
             
         state.config['hub75'] = hub75_config
         
-        # Reinitialize the device with new settings
+        # Reinitialize the device with new settings safely
         logger.info(f"Updating HUB75 hardware settings: {data}")
-        
-        # Stop current playback
         old_playing = state.is_playing
         state.is_playing = False
-        
-        # Reinitialize device
-        if initialize_device('HUB75', state.config):
+        with state.render_lock:
+            success = initialize_device('HUB75', state.config)
+        if success:
             emit('hardware_settings_updated', hub75_config)
             emit('success', {'message': 'Hardware settings applied successfully'})
-            
-            # Resume playback if it was playing
             if old_playing and state.current_animation:
                 state.is_playing = True
         else:

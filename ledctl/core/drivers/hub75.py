@@ -4,6 +4,7 @@ HUB75 LED Matrix Driver Implementation
 Supports RGB LED matrices using the Adafruit RGB Matrix HAT
 and rpi-rgb-led-matrix library.
 """
+# flake8: noqa
 
 import logging
 from typing import List, Tuple, Dict, Any
@@ -34,17 +35,30 @@ class HUB75Device(OutputDevice):
         self.cols = hub75_config.get('cols', 64)
         self.chain_length = hub75_config.get('chain_length', 1)
         self.parallel = hub75_config.get('parallel', 1)
-        self.hardware_mapping = hub75_config.get('hardware_mapping', 'adafruit-hat')
+        self.hardware_mapping = hub75_config.get(
+            'hardware_mapping', 'adafruit-hat'
+        )
         self.gpio_slowdown = hub75_config.get('gpio_slowdown', 2)
         self.brightness = hub75_config.get('brightness', 100)
         self.pwm_bits = hub75_config.get('pwm_bits', 11)
-        self.pwm_lsb_nanoseconds = hub75_config.get('pwm_lsb_nanoseconds', 130)
-        self.limit_refresh_rate_hz = hub75_config.get('limit_refresh_rate_hz', 0)
+        self.pwm_lsb_nanoseconds = hub75_config.get(
+            'pwm_lsb_nanoseconds', 130
+        )
+        self.limit_refresh_rate_hz = hub75_config.get(
+            'limit_refresh_rate_hz', 0
+        )
         self.show_refresh_rate = hub75_config.get('show_refresh_rate', False)
         self.drop_privileges = hub75_config.get('drop_privileges', False)
-        self.disable_hardware_pulsing = hub75_config.get('disable_hardware_pulsing', True)
+        self.disable_hardware_pulsing = hub75_config.get(
+            'disable_hardware_pulsing', True
+        )
         self.scan_mode = hub75_config.get('scan_mode', 0)  # 0=progressive, 1=interlaced
         self.dithering = hub75_config.get('dithering', 0)  # 0=off, 1=on
+        # Optional advanced mapping/timing options
+        self.panel_type = hub75_config.get('panel_type', None)
+        self.pixel_mapper = hub75_config.get('pixel_mapper', None)  # e.g., "Rotate:180,U-mapper"
+        self.row_address_type = hub75_config.get('row_address_type', None)
+        self.multiplexing = hub75_config.get('multiplexing', None)
         
         # Set dimensions
         self.width = self.cols * self.chain_length
@@ -85,6 +99,16 @@ class HUB75Device(OutputDevice):
                 self.options.scan_mode = self.scan_mode
             if hasattr(self.options, 'dithering'):
                 self.options.dithering = self.dithering
+            if self.panel_type and hasattr(self.options, 'panel_type'):
+                self.options.panel_type = self.panel_type
+            if self.pixel_mapper and hasattr(
+                self.options, 'pixel_mapper_config'
+            ):
+                self.options.pixel_mapper_config = self.pixel_mapper
+            if self.row_address_type and hasattr(self.options, 'row_address_type'):
+                self.options.row_address_type = self.row_address_type
+            if self.multiplexing and hasattr(self.options, 'multiplexing'):
+                self.options.multiplexing = self.multiplexing
                 
             if self.limit_refresh_rate_hz > 0:
                 self.options.limit_refresh_rate_hz = self.limit_refresh_rate_hz
@@ -98,8 +122,11 @@ class HUB75Device(OutputDevice):
             
             self.is_open = True
             
-            logger.info(f"HUB75 matrix opened: {self.width}x{self.height} "
-                       f"(chains={self.chain_length}, parallel={self.parallel})")
+            msg = (
+                f"HUB75 matrix opened: {self.width}x{self.height} "
+                f"(chains={self.chain_length}, parallel={self.parallel})"
+            )
+            logger.info(msg)
                        
         except Exception as e:
             logger.error(f"Failed to open HUB75 matrix: {e}")
@@ -158,13 +185,18 @@ class HUB75Device(OutputDevice):
         # Draw to matrix with optimizations
         try:
             # Skip identical frames
-            if self._last_frame_data is not None and scaled_data == self._last_frame_data:
+            if (
+                self._last_frame_data is not None
+                and scaled_data == self._last_frame_data
+            ):
                 return
             
             # Use faster bulk pixel setting if available
             if hasattr(self.offscreen_canvas, 'SetPixels'):
                 # scaled_data is already a list of (r,g,b) tuples
-                self.offscreen_canvas.SetPixels(0, 0, self.width, self.height, scaled_data)
+                self.offscreen_canvas.SetPixels(
+                    0, 0, self.width, self.height, scaled_data
+                )
             else:
                 # Fall back to individual pixel setting
                 for y in range(self.height):
@@ -174,10 +206,13 @@ class HUB75Device(OutputDevice):
                         if idx < len(scaled_data):
                             r, g, b = scaled_data[idx]
                             # Inline clamping for performance
-                            self.offscreen_canvas.SetPixel(x, y, 
-                                                         min(255, max(0, int(r))),
-                                                         min(255, max(0, int(g))),
-                                                         min(255, max(0, int(b))))
+                            self.offscreen_canvas.SetPixel(
+                                x,
+                                y,
+                                min(255, max(0, int(r))),
+                                min(255, max(0, int(g))),
+                                min(255, max(0, int(b))),
+                            )
                         
             self.offscreen_canvas = self.matrix.SwapOnVSync(self.offscreen_canvas)
             self._last_frame_data = scaled_data
