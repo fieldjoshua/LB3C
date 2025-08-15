@@ -278,6 +278,31 @@
                             </label>
                         </div>
                         
+                        <!-- Dithering -->
+                        <div class="form-check mb-3">
+                            <input class="form-check-input" type="checkbox" id="dithering">
+                            <label class="form-check-label" for="dithering">
+                                Enable Dithering (smoother gradients)
+                            </label>
+                        </div>
+                        
+                        <!-- Scan Mode -->
+                        <div class="mb-3">
+                            <label class="form-label">Scan Mode</label>
+                            <select class="form-select form-select-sm" id="scan-mode">
+                                <option value="0">Progressive (default)</option>
+                                <option value="1">Interlaced (may reduce flicker)</option>
+                            </select>
+                        </div>
+                        
+                        <!-- Hardware Pulsing -->
+                        <div class="form-check mb-3">
+                            <input class="form-check-input" type="checkbox" id="disable-hw-pulsing" checked>
+                            <label class="form-check-label" for="disable-hw-pulsing">
+                                Disable Hardware Pulsing (better timing)
+                            </label>
+                        </div>
+                        
                         <button class="btn btn-warning btn-sm w-100" id="btn-apply-hardware">
                             <i class="fas fa-cog"></i> Apply Hardware Settings
                         </button>

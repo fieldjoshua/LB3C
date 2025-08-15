@@ -7,158 +7,172 @@ import math
 import colorsys
 import random
 from typing import List, Tuple, Dict, Any
+from functools import lru_cache
 from .frames import ProceduralAnimation
 
 
 class ColorWave(ProceduralAnimation):
-    """Smooth color wave animation"""
+    """Smooth color wave animation - optimized version"""
     
     def __init__(self, width: int, height: int, fps: float = 30, 
                  wave_speed: float = 1.0, color_speed: float = 0.5):
         super().__init__(width, height, fps)
         self.wave_speed = wave_speed
         self.color_speed = color_speed
+        # Pre-calculate constants
+        self.x_positions = np.linspace(0, 2 * np.pi, width)
+        self.x_normalized = np.linspace(0, 1, width)
         
     def generate_frame(self, time: float) -> np.ndarray:
         frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
         
-        for y in range(self.height):
-            for x in range(self.width):
-                # Create wave pattern
-                wave = math.sin((x / self.width) * 2 * math.pi + time * self.wave_speed)
-                wave = (wave + 1) / 2  # Normalize to 0-1
-                
-                # Color cycling
-                hue = (time * self.color_speed + (x / self.width)) % 1.0
-                r, g, b = colorsys.hsv_to_rgb(hue, 1.0, wave)
-                
-                frame[y, x] = [int(r * 255), int(g * 255), int(b * 255)]
+        # Vectorized wave calculation
+        wave = np.sin(self.x_positions + time * self.wave_speed)
+        wave = (wave + 1) * 0.5  # Normalize to 0-1
+        
+        # Vectorized hue calculation
+        hues = (time * self.color_speed + self.x_normalized) % 1.0
+        
+        # Convert HSV to RGB for each column
+        for x in range(self.width):
+            r, g, b = colorsys.hsv_to_rgb(hues[x], 1.0, wave[x])
+            color = np.array([int(r * 255), int(g * 255), int(b * 255)], dtype=np.uint8)
+            frame[:, x] = color
                 
         return frame
 
 
 class RainbowCycle(ProceduralAnimation):
-    """Classic rainbow cycle animation"""
+    """Classic rainbow cycle animation - optimized version"""
     
     def __init__(self, width: int, height: int, fps: float = 30, 
                  cycle_speed: float = 0.2, diagonal: bool = False):
         super().__init__(width, height, fps)
         self.cycle_speed = cycle_speed
         self.diagonal = diagonal
+        # Pre-calculate position arrays
+        if diagonal:
+            x_grid, y_grid = np.meshgrid(range(width), range(height))
+            self.positions = (x_grid + y_grid) / (width + height)
+        else:
+            self.positions = np.linspace(0, 1, width)
         
     def generate_frame(self, time: float) -> np.ndarray:
         frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
         
-        for y in range(self.height):
+        # Calculate all hues at once
+        time_offset = time * self.cycle_speed
+        
+        if self.diagonal:
+            hues = (self.positions + time_offset) % 1.0
+            # Convert HSV to RGB for each pixel
+            for y in range(self.height):
+                for x in range(self.width):
+                    r, g, b = colorsys.hsv_to_rgb(hues[y, x], 1.0, 1.0)
+                    frame[y, x] = [int(r * 255), int(g * 255), int(b * 255)]
+        else:
+            hues = (self.positions + time_offset) % 1.0
+            # Convert HSV to RGB for each column
             for x in range(self.width):
-                if self.diagonal:
-                    # Diagonal rainbow
-                    position = (x + y) / (self.width + self.height)
-                else:
-                    # Horizontal rainbow
-                    position = x / self.width
-                    
-                hue = (position + time * self.cycle_speed) % 1.0
-                r, g, b = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
-                
-                frame[y, x] = [int(r * 255), int(g * 255), int(b * 255)]
+                r, g, b = colorsys.hsv_to_rgb(hues[x], 1.0, 1.0)
+                color = np.array([int(r * 255), int(g * 255), int(b * 255)], dtype=np.uint8)
+                frame[:, x] = color
                 
         return frame
 
 
 class Plasma(ProceduralAnimation):
-    """Plasma effect using sine wave interference"""
+    """Plasma effect using sine wave interference - optimized version"""
     
     def __init__(self, width: int, height: int, fps: float = 30,
                  scale: float = 0.1, speed: float = 1.0):
         super().__init__(width, height, fps)
         self.scale = scale
         self.speed = speed
+        # Pre-calculate coordinate grids
+        x_coords = np.arange(width) * scale
+        y_coords = np.arange(height) * scale
+        self.cx, self.cy = np.meshgrid(x_coords, y_coords)
         
     def generate_frame(self, time: float) -> np.ndarray:
         frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
         t = time * self.speed
         
+        # Vectorized plasma calculation
+        v1 = np.sin(self.cx + t)
+        
+        sin_t2 = math.sin(t/2)
+        cos_t3 = math.cos(t/3)
+        v2 = np.sin(10 * (self.cx * sin_t2 + self.cy * cos_t3) + t)
+        
+        cx_offset = self.cx + self.scale * math.sin(t/5)
+        cy_offset = self.cy + self.scale * cos_t3
+        v3 = np.sin(np.sqrt(100 * (cx_offset**2 + cy_offset**2) + 1) + t)
+        
+        # Combine and normalize
+        v = (v1 + v2 + v3) / 3.0
+        hues = (v + 1) * 0.5
+        
+        # Convert to RGB - still need per-pixel for HSV conversion
         for y in range(self.height):
             for x in range(self.width):
-                # Create plasma pattern using multiple sine waves
-                cx = x * self.scale
-                cy = y * self.scale
-                
-                v1 = math.sin(cx + t)
-                v2 = math.sin(10 * (cx * math.sin(t/2) + cy * math.cos(t/3)) + t)
-                cx += self.scale * math.sin(t/5)
-                cy += self.scale * math.cos(t/3)
-                v3 = math.sin(math.sqrt(100 * (cx*cx + cy*cy) + 1) + t)
-                
-                v = (v1 + v2 + v3) / 3.0
-                
-                # Convert to color
-                hue = (v + 1) * 0.5  # Normalize to 0-1
-                r, g, b = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
-                
+                r, g, b = colorsys.hsv_to_rgb(hues[y, x], 1.0, 1.0)
                 frame[y, x] = [int(r * 255), int(g * 255), int(b * 255)]
                 
         return frame
 
 
 class Fire(ProceduralAnimation):
-    """Animated fire effect"""
+    """Animated fire effect - optimized version"""
     
     def __init__(self, width: int, height: int, fps: float = 30,
                  cooling: float = 55, sparking: float = 120):
         super().__init__(width, height, fps)
         self.cooling = cooling
         self.sparking = sparking
-        self.heat = np.zeros((height, width), dtype=float)
+        self.heat = np.zeros((height + 2, width), dtype=float)  # Extra rows for boundary
         
     def generate_frame(self, time: float) -> np.ndarray:
-        frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        # Cool down every cell a little (vectorized)
+        cooling_map = np.random.uniform(0, self.cooling/255, (self.height, self.width))
+        self.heat[:self.height] = np.maximum(self.heat[:self.height] - cooling_map, 0)
         
-        # Cool down every cell a little
-        self.heat = np.maximum(self.heat - np.random.uniform(0, self.cooling/255, 
-                                                            (self.height, self.width)), 0)
-        
-        # Heat diffusion
+        # Heat diffusion (vectorized where possible)
         for y in range(self.height - 1, 1, -1):
             self.heat[y] = (self.heat[y-1] + 2 * self.heat[y-2]) / 3.0
             
         # Randomly ignite new sparks at bottom
-        if random.randint(0, 255) < self.sparking:
-            spark_x = random.randint(0, self.width - 1)
-            self.heat[0, spark_x] = random.uniform(0.7, 1.0)
-            
-        # Convert heat to colors
-        for y in range(self.height):
-            for x in range(self.width):
-                heat_val = self.heat[y, x]
-                
-                # Heat color mapping (clamp heat_val to 0-1)
-                heat_val = max(0.0, min(1.0, heat_val))
-                
-                if heat_val < 0.33:
-                    # Black to red
-                    r = int(heat_val * 3 * 255)
-                    g = 0
-                    b = 0
-                elif heat_val < 0.66:
-                    # Red to yellow
-                    r = 255
-                    g = int((heat_val - 0.33) * 3 * 255)
-                    b = 0
-                else:
-                    # Yellow to white
-                    r = 255
-                    g = 255
-                    b = min(255, int((heat_val - 0.66) * 3 * 255))
-                    
-                frame[self.height - 1 - y, x] = [r, g, b]  # Flip vertically
-                
+        spark_prob = self.sparking / 255.0
+        spark_mask = np.random.random(self.width) < spark_prob
+        self.heat[0, spark_mask] = np.random.uniform(0.7, 1.0, np.sum(spark_mask))
+        
+        # Convert heat to colors (vectorized)
+        heat_clamped = np.clip(self.heat[:self.height], 0, 1)
+        frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        
+        # Black to red (heat < 0.33)
+        mask1 = heat_clamped < 0.33
+        frame[mask1, 0] = (heat_clamped[mask1] * 3 * 255).astype(np.uint8)
+        
+        # Red to yellow (0.33 <= heat < 0.66)
+        mask2 = (heat_clamped >= 0.33) & (heat_clamped < 0.66)
+        frame[mask2, 0] = 255
+        frame[mask2, 1] = ((heat_clamped[mask2] - 0.33) * 3 * 255).astype(np.uint8)
+        
+        # Yellow to white (heat >= 0.66)
+        mask3 = heat_clamped >= 0.66
+        frame[mask3, 0] = 255
+        frame[mask3, 1] = 255
+        frame[mask3, 2] = np.minimum(255, ((heat_clamped[mask3] - 0.66) * 3 * 255).astype(np.uint8))
+        
+        # Flip vertically
+        return frame[::-1]
+        
         return frame
 
 
 class Matrix(ProceduralAnimation):
-    """Matrix-style falling text effect"""
+    """Matrix-style falling text effect - optimized version"""
     
     def __init__(self, width: int, height: int, fps: float = 30,
                  drop_speed: float = 5.0, trail_length: int = 10):
@@ -167,35 +181,38 @@ class Matrix(ProceduralAnimation):
         self.trail_length = trail_length
         self.drops = np.random.uniform(0, height, width)
         self.speeds = np.random.uniform(0.5, 1.5, width)
+        # Pre-calculate brightness falloff
+        self.brightness_falloff = np.linspace(1.0, 0.0, trail_length) ** 2
         
     def generate_frame(self, time: float) -> np.ndarray:
         frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
         
-        # Update drop positions
+        # Update drop positions (vectorized)
         self.drops += self.speeds * self.drop_speed * self.frame_duration
         
-        # Reset drops that go off screen
+        # Reset drops that go off screen (vectorized)
         reset_mask = self.drops > self.height + self.trail_length
-        self.drops[reset_mask] = np.random.uniform(-self.trail_length, 0, 
-                                                   np.sum(reset_mask))
-        self.speeds[reset_mask] = np.random.uniform(0.5, 1.5, np.sum(reset_mask))
+        num_reset = np.sum(reset_mask)
+        if num_reset > 0:
+            self.drops[reset_mask] = np.random.uniform(-self.trail_length, 0, num_reset)
+            self.speeds[reset_mask] = np.random.uniform(0.5, 1.5, num_reset)
         
-        # Draw drops
+        # Draw drops (partially vectorized)
         for x in range(self.width):
             drop_y = int(self.drops[x])
             
-            for i in range(self.trail_length):
-                y = drop_y - i
-                if 0 <= y < self.height and 0 <= x < self.width:
-                    brightness = 1.0 - (i / self.trail_length)
-                    brightness *= brightness  # Exponential falloff
-                    
-                    # Green color with slight variation
-                    g = int(brightness * 255)
-                    r = int(brightness * 50)
-                    b = int(brightness * 20)
-                    
-                    frame[y, x] = [r, g, b]
+            # Calculate valid y positions for the trail
+            y_positions = drop_y - np.arange(self.trail_length)
+            valid = (y_positions >= 0) & (y_positions < self.height)
+            
+            if np.any(valid):
+                valid_y = y_positions[valid]
+                valid_brightness = self.brightness_falloff[valid]
+                
+                # Set colors for valid positions
+                frame[valid_y, x, 1] = (valid_brightness * 255).astype(np.uint8)  # Green
+                frame[valid_y, x, 0] = (valid_brightness * 50).astype(np.uint8)   # Red
+                frame[valid_y, x, 2] = (valid_brightness * 20).astype(np.uint8)   # Blue
                     
         return frame
 

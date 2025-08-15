@@ -331,8 +331,14 @@ class ProceduralAnimation:
         raise NotImplementedError
         
     def to_rgb_list(self, frame: np.ndarray) -> List[Tuple[int, int, int]]:
-        """Convert frame to RGB tuple list"""
+        """Convert frame to RGB tuple list - optimized"""
+        # Ensure frame is uint8
         if frame.dtype != np.uint8:
             frame = np.clip(frame, 0, 255).astype(np.uint8)
+        # Use numpy's memory view for efficient conversion
         flat = frame.reshape(-1, 3)
-        return [tuple(pixel) for pixel in flat]
+        # Pre-allocate list for better performance
+        result = [None] * len(flat)
+        for i, pixel in enumerate(flat):
+            result[i] = (int(pixel[0]), int(pixel[1]), int(pixel[2]))
+        return result

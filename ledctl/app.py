@@ -210,6 +210,8 @@ def initialize_device(device_type, config):
 def playback_worker():
     """Background thread for animation playback"""
     last_time = time.time()
+    frame_count = 0
+    last_info_time = time.time()
     
     while not state.stop_event.is_set():
         if state.is_playing and state.current_animation and state.device:
@@ -218,6 +220,11 @@ def playback_worker():
                 current_time = time.time()
                 delta_time = current_time - last_time
                 last_time = current_time
+                
+                # Skip frame if we're running too slow
+                target_frame_time = 1.0 / state.config.get('render', {}).get('fps_cap', 60)
+                if delta_time > target_frame_time * 2:
+                    delta_time = target_frame_time
                 
                 # Adjust for speed parameter
                 delta_time *= state.params['speed']
@@ -241,19 +248,25 @@ def playback_worker():
                 h, w = frame.shape[:2]
                 state.device.draw_rgb_frame(w, h, rgb_data)
                 
-                # Emit frame info to clients
-                if hasattr(state.current_animation, 'current_frame'):
-                    # MediaAnimation has frame count info
-                    socketio.emit('frame_info', {
-                        'current_frame': state.current_animation.current_frame,
-                        'total_frames': state.current_animation.frame_count
-                    })
-                else:
-                    # ProceduralAnimation - emit time info
-                    socketio.emit('frame_info', {
-                        'time': state.current_animation.time,
-                        'type': 'procedural'
-                    })
+                # Emit frame info less frequently to reduce overhead
+                frame_count += 1
+                if current_time - last_info_time > 0.1:  # Update every 100ms
+                    if hasattr(state.current_animation, 'current_frame'):
+                        # MediaAnimation has frame count info
+                        socketio.emit('frame_info', {
+                            'current_frame': state.current_animation.current_frame,
+                            'total_frames': state.current_animation.frame_count,
+                            'fps': frame_count * 10  # Approximate FPS
+                        })
+                    else:
+                        # ProceduralAnimation - emit time info
+                        socketio.emit('frame_info', {
+                            'time': state.current_animation.time,
+                            'type': 'procedural',
+                            'fps': frame_count * 10
+                        })
+                    frame_count = 0
+                    last_info_time = current_time
                 
             except Exception as e:
                 logger.error(f"Playback error: {e}")
@@ -261,9 +274,14 @@ def playback_worker():
                 
         else:
             last_time = time.time()
+            frame_count = 0
+            last_info_time = time.time()
             
-        # Small sleep to prevent CPU spinning
-        time.sleep(0.001)
+        # Adaptive sleep based on performance
+        if state.is_playing:
+            time.sleep(0.0001)  # Minimal sleep when playing
+        else:
+            time.sleep(0.01)    # Longer sleep when idle
 
 
 # Routes
@@ -550,6 +568,12 @@ def handle_update_hardware_settings(data):
             hub75_config['limit_refresh_rate_hz'] = max(30, min(200, int(data['limit_refresh_rate_hz'])))
         if 'show_refresh_rate' in data:
             hub75_config['show_refresh_rate'] = bool(data['show_refresh_rate'])
+        if 'dithering' in data:
+            hub75_config['dithering'] = max(0, min(1, int(data['dithering'])))
+        if 'scan_mode' in data:
+            hub75_config['scan_mode'] = max(0, min(1, int(data['scan_mode'])))
+        if 'disable_hardware_pulsing' in data:
+            hub75_config['disable_hardware_pulsing'] = bool(data['disable_hardware_pulsing'])
             
         state.config['hub75'] = hub75_config
         

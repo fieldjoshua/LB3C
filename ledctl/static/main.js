@@ -347,7 +347,10 @@ function applyHardwareSettings() {
         pwm_bits: parseInt(document.getElementById('pwm-bits').value),
         pwm_lsb_nanoseconds: parseInt(document.getElementById('pwm-lsb-ns').value),
         limit_refresh_rate_hz: parseInt(document.getElementById('refresh-rate-limit').value),
-        show_refresh_rate: document.getElementById('show-refresh-rate').checked
+        show_refresh_rate: document.getElementById('show-refresh-rate').checked,
+        dithering: document.getElementById('dithering').checked ? 1 : 0,
+        scan_mode: parseInt(document.getElementById('scan-mode').value),
+        disable_hardware_pulsing: document.getElementById('disable-hw-pulsing').checked
     };
     
     state.socket.emit('update_hardware_settings', settings);

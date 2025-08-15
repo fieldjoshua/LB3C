@@ -26,6 +26,7 @@ class HUB75Device(OutputDevice):
         super().__init__(config)
         self.matrix = None
         self.options = None
+        self.offscreen_canvas = None
         
         # Extract HUB75-specific config
         hub75_config = config.get('hub75', {})
@@ -40,10 +41,18 @@ class HUB75Device(OutputDevice):
         self.pwm_lsb_nanoseconds = hub75_config.get('pwm_lsb_nanoseconds', 130)
         self.limit_refresh_rate_hz = hub75_config.get('limit_refresh_rate_hz', 0)
         self.show_refresh_rate = hub75_config.get('show_refresh_rate', False)
+        self.drop_privileges = hub75_config.get('drop_privileges', False)
+        self.disable_hardware_pulsing = hub75_config.get('disable_hardware_pulsing', True)
+        self.scan_mode = hub75_config.get('scan_mode', 0)  # 0=progressive, 1=interlaced
+        self.dithering = hub75_config.get('dithering', 0)  # 0=off, 1=on
         
         # Set dimensions
         self.width = self.cols * self.chain_length
         self.height = self.rows * self.parallel
+        
+        # Performance optimizations
+        self._last_frame_data = None
+        self._frame_buffer = None
         
     def open(self) -> None:
         """Initialize HUB75 matrix hardware"""
@@ -66,15 +75,27 @@ class HUB75Device(OutputDevice):
             self.options.pwm_bits = self.pwm_bits
             self.options.pwm_lsb_nanoseconds = self.pwm_lsb_nanoseconds
             
-            # Additional options that might be needed
+            # Additional options for performance
             self.options.show_refresh_rate = self.show_refresh_rate
-            self.options.disable_hardware_pulsing = False
+            self.options.disable_hardware_pulsing = self.disable_hardware_pulsing
+            self.options.drop_privileges = self.drop_privileges
+            
+            # Advanced options
+            if hasattr(self.options, 'scan_mode'):
+                self.options.scan_mode = self.scan_mode
+            if hasattr(self.options, 'dithering'):
+                self.options.dithering = self.dithering
+                
             if self.limit_refresh_rate_hz > 0:
                 self.options.limit_refresh_rate_hz = self.limit_refresh_rate_hz
             
             # Create matrix instance
             self.matrix = RGBMatrix(options=self.options)
             self.offscreen_canvas = self.matrix.CreateFrameCanvas()
+            
+            # Pre-allocate frame buffer for performance
+            self._frame_buffer = [(0, 0, 0)] * (self.width * self.height)
+            
             self.is_open = True
             
             logger.info(f"HUB75 matrix opened: {self.width}x{self.height} "
@@ -134,23 +155,39 @@ class HUB75Device(OutputDevice):
         else:
             scaled_data = rgb_data
             
-        # Draw to matrix
+        # Draw to matrix with optimizations
         try:
-            # Clear the offscreen canvas
-            self.offscreen_canvas.Clear()
+            # Skip identical frames
+            if self._last_frame_data is not None and scaled_data == self._last_frame_data:
+                return
             
-            for y in range(self.height):
-                for x in range(self.width):
-                    idx = y * self.width + x
-                    if idx < len(scaled_data):
-                        r, g, b = scaled_data[idx]
-                        # Clamp values to 0-255 to prevent overflow
-                        r = max(0, min(255, int(r)))
-                        g = max(0, min(255, int(g)))
-                        b = max(0, min(255, int(b)))
-                        self.offscreen_canvas.SetPixel(x, y, r, g, b)
+            # Use faster bulk pixel setting if available
+            if hasattr(self.offscreen_canvas, 'SetPixels'):
+                # Bulk set pixels (if supported by newer versions)
+                pixels = []
+                for idx in range(len(scaled_data)):
+                    r, g, b = scaled_data[idx]
+                    # Clamp values inline for speed
+                    pixels.append((min(255, max(0, int(r))),
+                                 min(255, max(0, int(g))),
+                                 min(255, max(0, int(b)))))
+                self.offscreen_canvas.SetPixels(0, 0, self.width, self.height, pixels)
+            else:
+                # Fall back to individual pixel setting
+                for y in range(self.height):
+                    row_offset = y * self.width
+                    for x in range(self.width):
+                        idx = row_offset + x
+                        if idx < len(scaled_data):
+                            r, g, b = scaled_data[idx]
+                            # Inline clamping for performance
+                            self.offscreen_canvas.SetPixel(x, y, 
+                                                         min(255, max(0, int(r))),
+                                                         min(255, max(0, int(g))),
+                                                         min(255, max(0, int(b))))
                         
             self.offscreen_canvas = self.matrix.SwapOnVSync(self.offscreen_canvas)
+            self._last_frame_data = scaled_data
             
         except Exception as e:
             logger.error(f"Error drawing to HUB75 matrix: {e}")
@@ -159,21 +196,35 @@ class HUB75Device(OutputDevice):
     def _scale_frame(self, rgb_data: List[Tuple[int, int, int]], 
                      src_w: int, src_h: int, 
                      dst_w: int, dst_h: int) -> List[Tuple[int, int, int]]:
-        """Simple nearest-neighbor scaling"""
-        scaled = []
+        """Optimized nearest-neighbor scaling with caching"""
+        # Check if we can skip scaling
+        if src_w == dst_w and src_h == dst_h:
+            return rgb_data
+            
+        # Use pre-allocated buffer if possible
+        if self._frame_buffer and len(self._frame_buffer) == dst_w * dst_h:
+            scaled = self._frame_buffer
+        else:
+            scaled = [(0, 0, 0)] * (dst_w * dst_h)
+            
         x_ratio = src_w / dst_w
         y_ratio = src_h / dst_h
         
+        # Pre-calculate source indices for each row
+        src_x_indices = [min(src_w - 1, int(x * x_ratio)) for x in range(dst_w)]
+        
+        dst_idx = 0
         for y in range(dst_h):
-            for x in range(dst_w):
-                src_x = int(x * x_ratio)
-                src_y = int(y * y_ratio)
-                src_idx = src_y * src_w + src_x
-                
+            src_y = min(src_h - 1, int(y * y_ratio))
+            src_row_offset = src_y * src_w
+            
+            for src_x in src_x_indices:
+                src_idx = src_row_offset + src_x
                 if src_idx < len(rgb_data):
-                    scaled.append(rgb_data[src_idx])
+                    scaled[dst_idx] = rgb_data[src_idx]
                 else:
-                    scaled.append((0, 0, 0))
+                    scaled[dst_idx] = (0, 0, 0)
+                dst_idx += 1
                     
         return scaled
 

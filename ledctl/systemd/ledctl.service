@@ -1,34 +1,64 @@
 [Unit]
-Description=LED Animation Control System
-Documentation=https://github.com/yourusername/ledctl
-After=network.target
+Description=LB3C LED Animation Control System
+Documentation=https://github.com/fieldjoshua/LB3C
+After=network.target redis.service
 
 [Service]
 Type=simple
 User=pi
 Group=gpio
-WorkingDirectory=/home/pi/ledctl
-Environment="PATH=/usr/local/bin:/usr/bin:/bin"
-Environment="PYTHONUNBUFFERED=1"
+WorkingDirectory=/home/pi/LB3C/ledctl
 
-# Run with sudo for GPIO access
-ExecStart=/usr/bin/sudo /usr/bin/python3 /home/pi/ledctl/app.py
+# Environment setup
+Environment="PATH=/home/pi/LB3C/ledctl/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONPATH=/home/pi/LB3C/ledctl"
+EnvironmentFile=-/home/pi/LB3C/ledctl/.env
+
+# Use virtual environment Python with sudo for GPIO
+ExecStartPre=/bin/bash -c 'source /home/pi/LB3C/ledctl/venv/bin/activate'
+ExecStart=/usr/bin/sudo /home/pi/LB3C/ledctl/venv/bin/python /home/pi/LB3C/ledctl/app.py
 
 # Restart policy
 Restart=always
 RestartSec=10
+StartLimitInterval=200
+StartLimitBurst=5
 
 # Logging
 StandardOutput=journal
 StandardError=journal
+SyslogIdentifier=ledctl
 
-# Security options (adjust as needed)
+# Security options
 NoNewPrivileges=true
 PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pi/LB3C/ledctl/uploads /home/pi/LB3C/ledctl/ledctl.log
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+
+# Hardware access
+DeviceAllow=/dev/gpiomem rw
+DeviceAllow=/dev/spidev0.0 rw
+DeviceAllow=/dev/spidev0.1 rw
+DeviceAllow=/dev/i2c-1 rw
+SupplementaryGroups=gpio spi i2c
 
 # Resource limits
-LimitNOFILE=4096
+LimitNOFILE=65536
+LimitNPROC=4096
 TimeoutStartSec=300
+TimeoutStopSec=30
+
+# Performance
+CPUWeight=100
+MemoryMax=1G
+IOWeight=100
 
 [Install]
 WantedBy=multi-user.target

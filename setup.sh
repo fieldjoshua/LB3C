@@ -97,6 +97,9 @@ install_dependencies() {
     # Add user to gpio group
     sudo usermod -a -G gpio,spi,i2c $USER
     echo -e "${GREEN}✓ Added $USER to gpio, spi, and i2c groups${NC}"
+    
+    # Configure CPU isolation for better LED timing
+    configure_cpu_isolation
 }
 
 # Clone or update repository
@@ -238,6 +241,52 @@ setup_systemd() {
     fi
 }
 
+# Configure CPU isolation for optimal LED performance
+configure_cpu_isolation() {
+    echo -e "\n${YELLOW}Configuring CPU isolation for LED timing...${NC}"
+    
+    # Check current cmdline.txt
+    CMDLINE="/boot/cmdline.txt"
+    if [ -f "$CMDLINE" ]; then
+        if grep -q "isolcpus" "$CMDLINE"; then
+            echo -e "${GREEN}✓ CPU isolation already configured${NC}"
+        else
+            read -p "Enable CPU core isolation for better LED timing? (y/N) " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                # Detect number of CPU cores
+                CORES=$(nproc)
+                if [ "$CORES" -ge 4 ]; then
+                    # Isolate last core (e.g., core 3 on Pi 3/4)
+                    ISOLATE_CORE=$((CORES - 1))
+                    echo -e "${YELLOW}Isolating CPU core $ISOLATE_CORE for LED control...${NC}"
+                    
+                    # Backup cmdline.txt
+                    sudo cp "$CMDLINE" "${CMDLINE}.backup"
+                    
+                    # Add isolcpus parameter
+                    sudo sed -i "s/$/ isolcpus=$ISOLATE_CORE/" "$CMDLINE"
+                    
+                    echo -e "${GREEN}✓ CPU core $ISOLATE_CORE isolated${NC}"
+                    echo -e "${YELLOW}Note: Reboot required for CPU isolation to take effect${NC}"
+                    REBOOT_REQUIRED=true
+                else
+                    echo -e "${YELLOW}CPU isolation not recommended for $CORES core system${NC}"
+                fi
+            fi
+        fi
+    else
+        echo -e "${YELLOW}Warning: /boot/cmdline.txt not found${NC}"
+    fi
+    
+    # Set CPU governor for performance
+    if command -v cpufreq-set &> /dev/null; then
+        echo -e "\n${YELLOW}Setting CPU governor to performance mode...${NC}"
+        sudo cpufreq-set -g performance || true
+        echo -e "${GREEN}✓ CPU governor set to performance${NC}"
+    fi
+}
+
 # Configure Redis (optional)
 setup_redis() {
     echo -e "\n${YELLOW}Configuring Redis for rate limiting...${NC}"
@@ -353,10 +402,22 @@ final_steps() {
     echo "- You may need to logout and login again for GPIO permissions"
     echo "- Use 'sudo' when running with hardware access"
     echo "- Check the docs at: $INSTALL_DIR/ledctl/docs/"
+    
+    if [ "$REBOOT_REQUIRED" = true ]; then
+        echo -e "\n${RED}REBOOT REQUIRED:${NC} CPU isolation has been configured"
+        echo "Please reboot your Raspberry Pi for optimal LED performance"
+        read -p "Reboot now? (y/N) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            sudo reboot
+        fi
+    fi
 }
 
 # Main installation flow
 main() {
+    REBOOT_REQUIRED=false
+    
     check_raspberry_pi
     check_user
     
