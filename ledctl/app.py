@@ -209,21 +209,25 @@ def initialize_device(device_type, config):
 
 def playback_worker():
     """Background thread for animation playback"""
-    last_time = time.time()
+    last_time = time.monotonic()
     frame_count = 0
-    last_info_time = time.time()
+    last_info_time = time.monotonic()
     
     while not state.stop_event.is_set():
+        loop_start = time.monotonic()
         if state.is_playing and state.current_animation and state.device:
             try:
                 # Calculate delta time
-                current_time = time.time()
+                current_time = time.monotonic()
                 delta_time = current_time - last_time
                 last_time = current_time
                 
-                # Skip frame if we're running too slow
-                target_frame_time = 1.0 / state.config.get('render', {}).get('fps_cap', 60)
-                if delta_time > target_frame_time * 2:
+                # Determine target frame duration from config
+                target_fps = state.config.get('render', {}).get('fps_cap', 60)
+                target_frame_time = 1.0 / max(1, int(target_fps))
+                
+                # Clamp extreme overruns
+                if delta_time > target_frame_time * 3:
                     delta_time = target_frame_time
                 
                 # Adjust for speed parameter
@@ -237,9 +241,9 @@ def playback_worker():
                     # MediaAnimation
                     frame = state.current_animation.get_next_frame(delta_time)
                 
-                # Apply gamma correction and RGB balance
+                # Apply gamma correction and RGB balance (in-place to avoid extra copy)
                 if state.gamma_corrector:
-                    frame = state.gamma_corrector.correct_frame(frame)
+                    frame = state.gamma_corrector.correct_frame(frame, in_place=True)
                 
                 # Convert to RGB list
                 rgb_data = state.current_animation.to_rgb_list(frame)
@@ -272,15 +276,14 @@ def playback_worker():
                 logger.error(f"Playback error: {e}")
                 state.is_playing = False
                 
+            # Frame pacing: sleep remainder to hit target FPS
+            elapsed = time.monotonic() - loop_start
+            if elapsed < target_frame_time:
+                time.sleep(target_frame_time - elapsed)
         else:
-            last_time = time.time()
+            last_time = time.monotonic()
             frame_count = 0
-            last_info_time = time.time()
-            
-        # Adaptive sleep based on performance
-        if state.is_playing:
-            time.sleep(0.0001)  # Minimal sleep when playing
-        else:
+            last_info_time = time.monotonic()
             time.sleep(0.01)    # Longer sleep when idle
 
 

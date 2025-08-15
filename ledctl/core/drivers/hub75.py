@@ -163,15 +163,8 @@ class HUB75Device(OutputDevice):
             
             # Use faster bulk pixel setting if available
             if hasattr(self.offscreen_canvas, 'SetPixels'):
-                # Bulk set pixels (if supported by newer versions)
-                pixels = []
-                for idx in range(len(scaled_data)):
-                    r, g, b = scaled_data[idx]
-                    # Clamp values inline for speed
-                    pixels.append((min(255, max(0, int(r))),
-                                 min(255, max(0, int(g))),
-                                 min(255, max(0, int(b)))))
-                self.offscreen_canvas.SetPixels(0, 0, self.width, self.height, pixels)
+                # scaled_data is already a list of (r,g,b) tuples
+                self.offscreen_canvas.SetPixels(0, 0, self.width, self.height, scaled_data)
             else:
                 # Fall back to individual pixel setting
                 for y in range(self.height):

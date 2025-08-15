@@ -15,6 +15,8 @@ hub75:
   brightness: 85                # Initial brightness (0-100)
   pwm_bits: 11                  # PWM resolution
   pwm_lsb_nanoseconds: 130     # PWM timing
+  limit_refresh_rate_hz: 120   # Limit refresh to reduce jitter
+  dithering: 1                 # Enable dithering for smoother gradients
   
 # WS2811 Addressable LED Configuration  
 ws2811:

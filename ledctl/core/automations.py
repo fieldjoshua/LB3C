@@ -11,6 +11,29 @@ from functools import lru_cache
 from .frames import ProceduralAnimation
 
 
+def hsv_to_rgb_np(h, s, v):
+    """Vectorized HSV->RGB. h,s,v in [0,1]. Returns uint8 ndarray with last dim 3."""
+    h = np.asarray(h, dtype=np.float32)
+    s = np.asarray(s, dtype=np.float32)
+    v = np.asarray(v, dtype=np.float32)
+    h = np.mod(h, 1.0)
+    s = np.clip(s, 0.0, 1.0)
+    v = np.clip(v, 0.0, 1.0)
+
+    i = np.floor(h * 6.0).astype(np.int32)
+    f = (h * 6.0) - i
+    p = v * (1.0 - s)
+    q = v * (1.0 - f * s)
+    t = v * (1.0 - (1.0 - f) * s)
+    i_mod = np.mod(i, 6)
+
+    r = np.choose(i_mod, [v, q, p, p, t, v])
+    g = np.choose(i_mod, [t, v, v, q, p, p])
+    b = np.choose(i_mod, [p, p, t, v, v, q])
+    rgb = np.stack([r, g, b], axis=-1)
+    return (rgb * 255.0).astype(np.uint8)
+
+
 class ColorWave(ProceduralAnimation):
     """Smooth color wave animation - optimized version"""
     
@@ -65,11 +88,7 @@ class RainbowCycle(ProceduralAnimation):
         
         if self.diagonal:
             hues = (self.positions + time_offset) % 1.0
-            # Convert HSV to RGB for each pixel
-            for y in range(self.height):
-                for x in range(self.width):
-                    r, g, b = colorsys.hsv_to_rgb(hues[y, x], 1.0, 1.0)
-                    frame[y, x] = [int(r * 255), int(g * 255), int(b * 255)]
+            frame = hsv_to_rgb_np(hues, 1.0, 1.0)
         else:
             hues = (self.positions + time_offset) % 1.0
             # Convert HSV to RGB for each column
@@ -113,12 +132,8 @@ class Plasma(ProceduralAnimation):
         v = (v1 + v2 + v3) / 3.0
         hues = (v + 1) * 0.5
         
-        # Convert to RGB - still need per-pixel for HSV conversion
-        for y in range(self.height):
-            for x in range(self.width):
-                r, g, b = colorsys.hsv_to_rgb(hues[y, x], 1.0, 1.0)
-                frame[y, x] = [int(r * 255), int(g * 255), int(b * 255)]
-                
+        # Vectorized HSV->RGB conversion
+        frame = hsv_to_rgb_np(hues, 1.0, 1.0)
         return frame
 
 

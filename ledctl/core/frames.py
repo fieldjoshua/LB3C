@@ -294,7 +294,7 @@ class MediaAnimation:
         
     def to_rgb_list(self, frame: np.ndarray) -> List[Tuple[int, int, int]]:
         """
-        Convert numpy frame to flat RGB tuple list
+        Convert numpy frame to flat RGB tuple list (optimized)
         
         Args:
             frame: Numpy array (H, W, 3)
@@ -305,10 +305,13 @@ class MediaAnimation:
         # Ensure frame is uint8
         if frame.dtype != np.uint8:
             frame = np.clip(frame, 0, 255).astype(np.uint8)
-            
-        # Flatten and convert to tuples
+        
+        # Use numpy's memory view and preallocated list for speed
         flat = frame.reshape(-1, 3)
-        return [tuple(pixel) for pixel in flat]
+        result = [None] * len(flat)
+        for i, pixel in enumerate(flat):
+            result[i] = (int(pixel[0]), int(pixel[1]), int(pixel[2]))
+        return result
 
 
 class ProceduralAnimation:
