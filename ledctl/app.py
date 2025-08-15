@@ -543,7 +543,7 @@ def handle_update_hardware_settings(data):
         if 'gpio_slowdown' in data:
             hub75_config['gpio_slowdown'] = max(1, min(4, int(data['gpio_slowdown'])))
         if 'pwm_bits' in data:
-            hub75_config['pwm_bits'] = max(8, min(12, int(data['pwm_bits'])))
+            hub75_config['pwm_bits'] = max(8, min(11, int(data['pwm_bits'])))
         if 'pwm_lsb_nanoseconds' in data:
             hub75_config['pwm_lsb_nanoseconds'] = max(50, min(300, int(data['pwm_lsb_nanoseconds'])))
         if 'limit_refresh_rate_hz' in data:
