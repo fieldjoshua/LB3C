@@ -89,11 +89,48 @@ class AnimationControlSchema(Schema):
     speed = fields.Float(validate=validate.Range(min=0.1, max=10.0))
 
 
+class AnimationParameterSchema(Schema):
+    """Validation schema for animation-specific parameters."""
+    # Procedural animation parameters
+    wave_speed = fields.Float(validate=validate.Range(min=0.0, max=10.0))
+    color_speed = fields.Float(validate=validate.Range(min=0.0, max=10.0))
+    cycle_speed = fields.Float(validate=validate.Range(min=0.0, max=10.0))
+    plasma_speed = fields.Float(validate=validate.Range(min=0.0, max=10.0))
+    drop_speed = fields.Float(validate=validate.Range(min=0.0, max=5.0))
+    fade_speed = fields.Float(validate=validate.Range(min=0.0, max=1.0))
+    breathe_speed = fields.Float(validate=validate.Range(min=0.0, max=5.0))
+    scroll_speed = fields.Float(validate=validate.Range(min=-5.0, max=5.0))
+    
+    # Other animation parameters
+    scale = fields.Float(validate=validate.Range(min=0.01, max=2.0))
+    diagonal = fields.Bool()
+    cooling = fields.Float(validate=validate.Range(min=0.0, max=100.0))
+    sparking = fields.Float(validate=validate.Range(min=0.0, max=255.0))
+    trail_length = fields.Int(validate=validate.Range(min=1, max=50))
+    density = fields.Float(validate=validate.Range(min=0.0, max=1.0))
+    frequency = fields.Float(validate=validate.Range(min=0.1, max=50.0))
+    duty_cycle = fields.Float(validate=validate.Range(min=0.0, max=1.0))
+    min_brightness = fields.Float(validate=validate.Range(min=0.0, max=1.0))
+    square_size = fields.Int(validate=validate.Range(min=1, max=32))
+    
+    # Color parameters (validated as lists of 3 integers 0-255)
+    color = fields.List(fields.Int(validate=validate.Range(min=0, max=255)), 
+                       validate=validate.Length(equal=3))
+    color1 = fields.List(fields.Int(validate=validate.Range(min=0, max=255)), 
+                        validate=validate.Length(equal=3))
+    color2 = fields.List(fields.Int(validate=validate.Range(min=0, max=255)), 
+                        validate=validate.Length(equal=3))
+    
+    # String enums
+    color_mode = fields.Str(validate=validate.OneOf(['white', 'rainbow']))
+
+
 class ParameterUpdateSchema(Schema):
     """Validation schema for parameter updates."""
     parameter = fields.Str(
         required=True,
-        validate=validate.OneOf(['brightness', 'speed', 'gamma', 'rgb_balance'])
+        validate=validate.OneOf(['brightness', 'speed', 'gamma', 'rgb_balance', 
+                               'mirror_x', 'mirror_y', 'rotation'])
     )
     value = fields.Raw(required=True)  # Validated based on parameter type
     
@@ -117,6 +154,12 @@ class ParameterUpdateSchema(Schema):
             for v in value:
                 if not isinstance(v, (int, float)) or v < 0 or v > 2:
                     raise ValidationError('RGB balance values must be between 0 and 2')
+        elif param in ['mirror_x', 'mirror_y']:
+            if not isinstance(value, bool):
+                raise ValidationError(f'{param} must be a boolean value')
+        elif param == 'rotation':
+            if not isinstance(value, int) or value not in [0, 90, 180, 270]:
+                raise ValidationError('Rotation must be 0, 90, 180, or 270 degrees')
 
 
 # API Key Management

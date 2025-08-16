@@ -47,7 +47,8 @@ from core.errors import (
 from core.security import (
     setup_security, limiter, validate_input, require_api_key,
     sanitize_path, validate_file_type, FileUploadSchema,
-    DeviceConfigSchema, AnimationControlSchema, ParameterUpdateSchema
+    DeviceConfigSchema, AnimationControlSchema, ParameterUpdateSchema,
+    AnimationParameterSchema
 )
 
 # Try to import hardware drivers (may fail on non-Pi systems)
@@ -136,10 +137,35 @@ class AppState:
             'brightness': 1.0,
             'speed': 1.0,
             'gamma': 2.2,
-            'rgb_balance': [1.0, 1.0, 1.0]
+            'rgb_balance': [1.0, 1.0, 1.0],
+            'mirror_x': False,
+            'mirror_y': False,
+            'rotation': 0
         }
         
 state = AppState()
+
+
+def apply_transforms(frame, params):
+    """Apply mirror and rotation transforms to frame"""
+    import numpy as np
+    
+    # Apply mirroring
+    if params.get('mirror_x', False):
+        frame = np.fliplr(frame)
+    if params.get('mirror_y', False):
+        frame = np.flipud(frame)
+    
+    # Apply rotation
+    rotation = params.get('rotation', 0)
+    if rotation == 90:
+        frame = np.rot90(frame, k=1)
+    elif rotation == 180:
+        frame = np.rot90(frame, k=2)
+    elif rotation == 270:
+        frame = np.rot90(frame, k=3)
+    
+    return frame
 
 
 def load_config(config_path='config/device.default.yml'):
@@ -244,6 +270,9 @@ def playback_worker():
                 else:
                     # MediaAnimation
                     frame = state.current_animation.get_next_frame(delta_time)
+                
+                # Apply transforms
+                frame = apply_transforms(frame, state.params)
                 
                 # Apply gamma correction and RGB balance (in-place to avoid extra copy)
                 if state.gamma_corrector:
@@ -485,11 +514,19 @@ def handle_play(data):
         # Get automation parameters
         params = data.get('params', {})
         
+        # Validate animation parameters
+        try:
+            schema = AnimationParameterSchema()
+            validated_params = schema.load(params, partial=True)  # partial=True allows missing fields
+        except ValidationError as e:
+            emit('error', {'message': 'Invalid animation parameters', 'details': e.messages})
+            return
+        
         try:
             # Create automation instance
             fps = state.config.get('render', {}).get('fps_cap', 30)
             automation = create_automation(automation_name, width, height, 
-                                         fps=fps, **params)
+                                         fps=fps, **validated_params)
             state.current_animation = automation
             state.is_playing = True
             

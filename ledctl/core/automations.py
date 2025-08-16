@@ -104,10 +104,10 @@ class Plasma(ProceduralAnimation):
     """Plasma effect using sine wave interference - optimized version"""
     
     def __init__(self, width: int, height: int, fps: float = 30,
-                 scale: float = 0.1, speed: float = 1.0):
+                 scale: float = 0.1, plasma_speed: float = 1.0):
         super().__init__(width, height, fps)
         self.scale = scale
-        self.speed = speed
+        self.plasma_speed = plasma_speed
         # Pre-calculate coordinate grids
         x_coords = np.arange(width) * scale
         y_coords = np.arange(height) * scale
@@ -115,7 +115,7 @@ class Plasma(ProceduralAnimation):
         
     def generate_frame(self, time: float) -> np.ndarray:
         frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
-        t = time * self.speed
+        t = time * self.plasma_speed
         
         # Vectorized plasma calculation
         v1 = np.sin(self.cx + t)
@@ -182,8 +182,6 @@ class Fire(ProceduralAnimation):
         
         # Flip vertically
         return frame[::-1]
-        
-        return frame
 
 
 class Matrix(ProceduralAnimation):
@@ -382,7 +380,40 @@ AUTOMATION_REGISTRY = {
 
 
 def get_automation_info() -> Dict[str, Dict[str, Any]]:
-    """Get information about available automations"""
+    """Get information about available automations with enhanced type info"""
+    # Define parameter metadata
+    PARAM_METADATA = {
+        # Color parameters
+        'color': {'type': 'color', 'default': [255, 255, 255]},
+        'color1': {'type': 'color', 'default': [255, 0, 0]},
+        'color2': {'type': 'color', 'default': [0, 0, 255]},
+        
+        # String enum parameters
+        'color_mode': {'type': 'select', 'options': ['white', 'rainbow'], 'default': 'white'},
+        
+        # Speed parameters (renamed to avoid conflicts)
+        'wave_speed': {'type': 'float', 'default': 1.0, 'min': 0.0, 'max': 10.0},
+        'color_speed': {'type': 'float', 'default': 1.0, 'min': 0.0, 'max': 10.0},
+        'cycle_speed': {'type': 'float', 'default': 1.0, 'min': 0.0, 'max': 10.0},
+        'plasma_speed': {'type': 'float', 'default': 1.0, 'min': 0.0, 'max': 10.0},
+        'drop_speed': {'type': 'float', 'default': 1.0, 'min': 0.0, 'max': 5.0},
+        'fade_speed': {'type': 'float', 'default': 0.1, 'min': 0.0, 'max': 1.0},
+        'breathe_speed': {'type': 'float', 'default': 1.0, 'min': 0.0, 'max': 5.0},
+        'scroll_speed': {'type': 'float', 'default': 1.0, 'min': -5.0, 'max': 5.0},
+        
+        # Other parameters
+        'scale': {'type': 'float', 'default': 0.1, 'min': 0.01, 'max': 2.0},
+        'diagonal': {'type': 'bool', 'default': False},
+        'cooling': {'type': 'float', 'default': 55.0, 'min': 0.0, 'max': 100.0},
+        'sparking': {'type': 'float', 'default': 120.0, 'min': 0.0, 'max': 255.0},
+        'trail_length': {'type': 'int', 'default': 10, 'min': 1, 'max': 50},
+        'density': {'type': 'float', 'default': 0.1, 'min': 0.0, 'max': 1.0},
+        'frequency': {'type': 'float', 'default': 5.0, 'min': 0.1, 'max': 50.0},
+        'duty_cycle': {'type': 'float', 'default': 0.5, 'min': 0.0, 'max': 1.0},
+        'min_brightness': {'type': 'float', 'default': 0.1, 'min': 0.0, 'max': 1.0},
+        'square_size': {'type': 'int', 'default': 8, 'min': 1, 'max': 32},
+    }
+    
     info = {}
     for name, cls in AUTOMATION_REGISTRY.items():
         # Extract parameters from __init__ signature
@@ -393,11 +424,16 @@ def get_automation_info() -> Dict[str, Dict[str, Any]]:
         for param_name, param in sig.parameters.items():
             if param_name in ['self', 'width', 'height', 'fps']:
                 continue
-                
-            param_info = {
-                'type': param.annotation.__name__ if param.annotation != param.empty else 'any',
-                'default': param.default if param.default != param.empty else None
-            }
+            
+            # Use metadata if available, otherwise infer from signature
+            if param_name in PARAM_METADATA:
+                param_info = PARAM_METADATA[param_name].copy()
+            else:
+                param_info = {
+                    'type': param.annotation.__name__ if param.annotation != param.empty else 'float',
+                    'default': param.default if param.default != param.empty else None
+                }
+            
             params[param_name] = param_info
             
         info[name] = {

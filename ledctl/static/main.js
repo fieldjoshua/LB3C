@@ -246,16 +246,18 @@ function onAutomationSelected(e) {
             input.className = 'form-range';
             input.id = `auto-param-${paramName}`;
             input.step = '0.1';
-            input.min = '0';
-            input.max = '10';
-            input.value = paramInfo.default || '1';
+            input.min = paramInfo.min !== undefined ? paramInfo.min.toString() : '0';
+            input.max = paramInfo.max !== undefined ? paramInfo.max.toString() : '10';
+            input.value = paramInfo.default !== undefined ? paramInfo.default.toString() : '1';
             
             const valueSpan = document.createElement('span');
             valueSpan.className = 'ms-2';
-            valueSpan.textContent = input.value;
+            valueSpan.style.minWidth = '3em';
+            valueSpan.style.display = 'inline-block';
+            valueSpan.textContent = parseFloat(input.value).toFixed(1);
             
             input.addEventListener('input', () => {
-                valueSpan.textContent = input.value;
+                valueSpan.textContent = parseFloat(input.value).toFixed(1);
             });
             
             div.appendChild(input);
@@ -286,8 +288,60 @@ function onAutomationSelected(e) {
             input.type = 'number';
             input.className = 'form-control';
             input.id = `auto-param-${paramName}`;
-            input.value = paramInfo.default || '1';
+            input.value = paramInfo.default !== undefined ? paramInfo.default.toString() : '1';
+            if (paramInfo.min !== undefined) input.min = paramInfo.min.toString();
+            if (paramInfo.max !== undefined) input.max = paramInfo.max.toString();
+            input.step = '1';
             div.appendChild(input);
+        } else if (paramInfo.type === 'color') {
+            // Create color picker for color parameters
+            const colorWrapper = document.createElement('div');
+            colorWrapper.className = 'd-flex align-items-center gap-2';
+            
+            const input = document.createElement('input');
+            input.type = 'color';
+            input.className = 'form-control form-control-color';
+            input.id = `auto-param-${paramName}`;
+            
+            // Convert default RGB array to hex if provided
+            if (paramInfo.default && Array.isArray(paramInfo.default)) {
+                const [r, g, b] = paramInfo.default;
+                const hex = '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
+                input.value = hex;
+            } else {
+                input.value = '#ffffff';
+            }
+            
+            const colorLabel = document.createElement('span');
+            colorLabel.textContent = input.value;
+            colorLabel.style.fontFamily = 'monospace';
+            
+            input.addEventListener('input', (e) => {
+                colorLabel.textContent = e.target.value;
+            });
+            
+            colorWrapper.appendChild(input);
+            colorWrapper.appendChild(colorLabel);
+            div.appendChild(colorWrapper);
+        } else if (paramInfo.type === 'select') {
+            // Create dropdown for string enum parameters
+            const select = document.createElement('select');
+            select.className = 'form-select';
+            select.id = `auto-param-${paramName}`;
+            
+            if (paramInfo.options) {
+                paramInfo.options.forEach(option => {
+                    const opt = document.createElement('option');
+                    opt.value = option;
+                    opt.textContent = option;
+                    if (option === paramInfo.default) {
+                        opt.selected = true;
+                    }
+                    select.appendChild(opt);
+                });
+            }
+            
+            div.appendChild(select);
         }
         
         paramsEl.appendChild(div);
@@ -308,10 +362,21 @@ function playAutomation() {
     Object.keys(automation.parameters).forEach(paramName => {
         const input = document.getElementById(`auto-param-${paramName}`);
         if (input) {
+            const paramInfo = automation.parameters[paramName];
+            
             if (input.type === 'checkbox') {
                 params[paramName] = input.checked;
             } else if (input.type === 'number') {
                 params[paramName] = parseInt(input.value);
+            } else if (input.type === 'color') {
+                // Convert hex color to RGB array
+                const hex = input.value.substring(1);
+                const r = parseInt(hex.substring(0, 2), 16);
+                const g = parseInt(hex.substring(2, 4), 16);
+                const b = parseInt(hex.substring(4, 6), 16);
+                params[paramName] = [r, g, b];
+            } else if (input.tagName === 'SELECT') {
+                params[paramName] = input.value;
             } else {
                 params[paramName] = parseFloat(input.value);
             }
@@ -605,6 +670,21 @@ function initializeEventHandlers() {
             ];
             sendParameter('rgb_balance', rgbBalance);
         });
+    });
+    
+    // Transform controls
+    document.getElementById('mirror-x').addEventListener('change', (e) => {
+        sendParameter('mirror_x', e.target.checked);
+    });
+    
+    document.getElementById('mirror-y').addEventListener('change', (e) => {
+        sendParameter('mirror_y', e.target.checked);
+    });
+    
+    document.getElementById('rotation').addEventListener('input', (e) => {
+        const rotation = parseInt(e.target.value);
+        document.getElementById('rotation-value').textContent = rotation + '°';
+        sendParameter('rotation', rotation);
     });
     
     // Playlist controls
