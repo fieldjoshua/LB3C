@@ -6,8 +6,8 @@ device: HUB75
 
 # HUB75 LED Matrix Configuration
 hub75:
-  rows: 32                      # Matrix height in pixels (physical)
-  cols: 64                      # Matrix width in pixels (physical)
+  rows: 64                      # Matrix height in pixels
+  cols: 64                      # Matrix width in pixels
   chain_length: 1               # Number of panels daisy-chained
   parallel: 1                   # Number of parallel chains
   hardware_mapping: "adafruit-hat"  # GPIO mapping type
@@ -20,7 +20,7 @@ hub75:
   multiplexing: 0              # Panel multiplexing type (0-8)
   row_address_type: 0          # Row addressing (0-3)
   panel_type: ""               # Panel IC type: "" | "FM6126A" | "FM6127"
-  pixel_mapper_config: "U-mapper"  # Pixel mapping: "" | "U-mapper" | "Rotate:90"
+  pixel_mapper_config: ""      # Pixel mapping: "" | "U-mapper" | "Rotate:90"
   
 # WS2811 Addressable LED Configuration  
 ws2811:
