@@ -5,6 +5,7 @@
 device: HUB75
 
 # HUB75 LED Matrix Configuration
+# Panel: P3 64x64 (3mm pitch) with 5125 driver chips
 hub75:
   rows: 64                      # Matrix height in pixels
   cols: 64                      # Matrix width in pixels
