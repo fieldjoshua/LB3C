@@ -12,11 +12,11 @@ hub75:
   chain_length: 1               # Number of panels daisy-chained
   parallel: 1                   # Number of parallel chains
   hardware_mapping: "adafruit-hat"  # GPIO mapping type
-  gpio_slowdown: 4              # GPIO timing adjustment (1-4)
+  gpio_slowdown: 3              # GPIO timing adjustment (1-4)
   brightness: 85                # Initial brightness (0-100)
   pwm_bits: 11                  # PWM resolution
-  pwm_lsb_nanoseconds: 130     # PWM timing
-  limit_refresh_rate_hz: 120   # Limit refresh to reduce jitter
+  pwm_lsb_nanoseconds: 120     # PWM timing
+  limit_refresh_rate_hz: 200   # Limit refresh to reduce jitter
   dithering: 1                 # Enable dithering for smoother gradients
   multiplexing: 0              # Panel multiplexing type (0-8)
   row_address_type: 1          # Row addressing (0-3) - AB addressing for this panel
