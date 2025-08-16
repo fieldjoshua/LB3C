@@ -57,10 +57,10 @@ def test_mapping(rows, cols, mapper, description):
             matrix.SetPixel(i, 31, 255, 255, 255)
             matrix.SetPixel(i, 32, 255, 255, 255)
         
-        response = input("Check quadrant layout (should see 4 colored squares). Press Enter or 'y' if correct: ")
+        response = input("Check quadrant layout (should see 4 colored squares). Type 'y' if correct, Enter to skip: ")
         matrix.Clear()
         
-        return response.lower() in ['', 'y', 'yes']
+        return response.lower() in ['y', 'yes']
         
     except Exception as e:
         print(f"Error: {e}")
