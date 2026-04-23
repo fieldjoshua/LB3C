@@ -1,7 +1,7 @@
 # LED Animation Control System Configuration
 # Default configuration for all supported LED hardware types
 
-# Active device type: HUB75 | WS2811_PI | WLED | MOCK
+# Active device type: HUB75 | WS2811_PI | WLED | ARDUINO | MOCK
 device: HUB75
 
 # HUB75 LED Matrix Configuration
@@ -30,6 +30,22 @@ ws2811:
   invert: false                # Invert signal (for level shifting)
   channel: 0                   # PWM channel
   
+# Arduino-over-USB (Adalight protocol) Configuration
+# The Arduino Nano drives WS2811/WS2812 LEDs locally; this host streams
+# RGB frames to it over USB serial.
+arduino:
+  port: null                    # null = autodetect (CH340/CP210x/FTDI/Arduino)
+  baud: 500000                  # Must match the Arduino sketch
+  width: 10                     # Grid width (pixels)
+  height: 10                    # Grid height (pixels)
+  count: 100                    # Total LEDs wired to the Nano
+  pixel_order: "GRB"            # WS2811/WS2812 color order
+  layout: "serpentine"          # "serpentine" (zigzag) | "linear"
+  serpentine_start_flipped: false  # Set true if row 0 runs right-to-left
+  wait_for_handshake: true      # Wait for "Ada" banner after reset
+  reset_on_open: true           # Pulse DTR to reset the Nano on open
+  map_file: null                # Optional JSON pixel map (overrides layout)
+
 # WLED ESP32 Network Configuration
 wled:
   host: "192.168.1.50"         # WLED device IP address
