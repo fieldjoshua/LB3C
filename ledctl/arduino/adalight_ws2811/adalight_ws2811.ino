@@ -23,7 +23,12 @@
 #define COLOR_ORDER  GRB        // Must match arduino.pixel_order
 #define CHIPSET      WS2811     // WS2811 | WS2812 | WS2812B
 #define SERIAL_BAUD  500000     // Must match arduino.baud
+#define DIAG_PIN     LED_BUILTIN // Onboard LED for bring-up diagnostics
 // -------------------------------------------------------------------------
+
+// Bring-up aid: the onboard LED pulses ~1 Hz when idle so you know the
+// sketch is alive, and toggles on every completed frame so you can
+// confirm USB->Nano traffic even with NO WS2811 strip connected.
 
 CRGB leds[LED_COUNT];
 
@@ -47,6 +52,10 @@ static uint16_t led_index = 0;
 static uint8_t  cur_r = 0, cur_g = 0;
 static uint8_t  hi = 0, lo = 0;
 
+static uint32_t last_frame_ms = 0;
+static uint32_t last_heartbeat_ms = 0;
+static bool     diag_state = false;
+
 static inline void resetParser() {
   state = WAIT_MAGIC_0;
   pixels_remaining = 0;
@@ -55,6 +64,9 @@ static inline void resetParser() {
 }
 
 void setup() {
+  pinMode(DIAG_PIN, OUTPUT);
+  digitalWrite(DIAG_PIN, LOW);
+
   FastLED.addLeds<CHIPSET, LED_PIN, COLOR_ORDER>(leds, LED_COUNT);
   FastLED.clear(true);
 
@@ -63,7 +75,26 @@ void setup() {
   Serial.print(F("Ada\n"));
 }
 
+static inline void onFrameComplete() {
+  diag_state = !diag_state;
+  digitalWrite(DIAG_PIN, diag_state ? HIGH : LOW);
+  last_frame_ms = millis();
+}
+
+static inline void tickHeartbeat() {
+  // If no frames have arrived recently, pulse the diag LED at ~1 Hz so
+  // you can tell the sketch is running even before the host connects.
+  uint32_t now = millis();
+  if (now - last_frame_ms < 500) return;  // actively receiving
+  if (now - last_heartbeat_ms >= 1000) {
+    last_heartbeat_ms = now;
+    diag_state = !diag_state;
+    digitalWrite(DIAG_PIN, diag_state ? HIGH : LOW);
+  }
+}
+
 void loop() {
+  tickHeartbeat();
   while (Serial.available()) {
     int c = Serial.read();
     if (c < 0) break;
@@ -101,7 +132,7 @@ void loop() {
         pixel_byte_idx = 0;
         led_index = 0;
         state = (pixels_remaining > 0) ? READ_PIXELS : WAIT_MAGIC_0;
-        if (state == WAIT_MAGIC_0) FastLED.show();
+        if (state == WAIT_MAGIC_0) { FastLED.show(); onFrameComplete(); }
         break;
       }
       case READ_PIXELS:
@@ -122,6 +153,7 @@ void loop() {
           pixels_remaining--;
           if (pixels_remaining == 0) {
             FastLED.show();
+            onFrameComplete();
             state = WAIT_MAGIC_0;
           }
         }
