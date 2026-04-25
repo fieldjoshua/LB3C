@@ -552,6 +552,179 @@ class DarkMatter(ProceduralAnimation):
         return np.clip(accum, 0.0, 255.0).astype(np.uint8)
 
 
+class SupernovaSampler(ProceduralAnimation):
+    """Six supernovas against black space. Each fades in, undulates for ~30s,
+    double-flashes its core at peak, then crossfades into the next.
+
+    Designed to be played at >=2x supersampling so shape detail (rings,
+    spikes, spirals) is visible on a coarse grid.
+    """
+
+    # Six novas, distinct shape + color palette per slot. Hues are in [0,1]:
+    #   0.00 red, 0.08 orange, 0.13 gold, 0.30 lime, 0.40 emerald,
+    #   0.50 cyan, 0.55 ice blue, 0.70 indigo, 0.75 violet, 0.92 hot pink.
+    NOVAS = [
+        # crimson core, cyan shockwave rings, upper-left
+        dict(name='crimson_shock',
+             core_hue=0.00, core_sat=1.0, core_sigma=0.07,
+             halo_hue=0.52, halo_sat=0.95, halo_sigma=0.20, halo_amp=0.55,
+             shape='rings', shape_param=2.4,
+             cx=0.40, cy=0.40, undulate_rate=0.21),
+        # violet core, lime tendrils, right side
+        dict(name='violet_thorn',
+             core_hue=0.78, core_sat=0.95, core_sigma=0.08,
+             halo_hue=0.30, halo_sat=1.0, halo_sigma=0.22, halo_amp=0.50,
+             shape='spikes', shape_param=6,
+             cx=0.62, cy=0.45, undulate_rate=0.17),
+        # gold core, hot pink halo, center
+        dict(name='gold_blossom',
+             core_hue=0.13, core_sat=0.9, core_sigma=0.07,
+             halo_hue=0.92, halo_sat=0.95, halo_sigma=0.22, halo_amp=0.55,
+             shape='rings', shape_param=3.2,
+             cx=0.50, cy=0.50, undulate_rate=0.27),
+        # ice-blue core, fire-orange spiral, lower-left
+        dict(name='glacier_forge',
+             core_hue=0.55, core_sat=0.85, core_sigma=0.07,
+             halo_hue=0.08, halo_sat=1.0, halo_sigma=0.20, halo_amp=0.50,
+             shape='spiral', shape_param=1.5,
+             cx=0.42, cy=0.58, undulate_rate=0.19),
+        # emerald core, hot-pink rays, right of center
+        dict(name='toxic_rays',
+             core_hue=0.40, core_sat=1.0, core_sigma=0.07,
+             halo_hue=0.92, halo_sat=0.9, halo_sigma=0.22, halo_amp=0.50,
+             shape='spikes', shape_param=4,
+             cx=0.55, cy=0.48, undulate_rate=0.23),
+        # deep indigo core, brilliant white spiral halo, center
+        dict(name='white_dwarf',
+             core_hue=0.70, core_sat=0.85, core_sigma=0.08,
+             halo_hue=0.00, halo_sat=0.0, halo_sigma=0.22, halo_amp=0.60,
+             shape='spiral', shape_param=2.5,
+             cx=0.50, cy=0.50, undulate_rate=0.15),
+    ]
+
+    def __init__(self, width: int, height: int, fps: float = 30,
+                 hold_seconds: float = 30.0,
+                 fade_seconds: float = 2.0,
+                 flash_seconds: float = 0.45):
+        super().__init__(width, height, fps)
+        self.hold = float(hold_seconds)
+        self.fade = float(fade_seconds)
+        self.flash = float(flash_seconds)
+        # Per-nova slot: fade_in (overlaps with previous nova's fade_out),
+        # then flash burst when fully visible, then long hold/undulate.
+        self.slot = self.fade + self.flash + self.hold
+        x = np.arange(width, dtype=np.float32)
+        y = np.arange(height, dtype=np.float32)
+        self.xx, self.yy = np.meshgrid(x, y)
+        self._scale = float(min(width, height))
+
+    @staticmethod
+    def _hue_rgb(hue: float, sat: float) -> Tuple[float, float, float]:
+        h = np.array([hue % 1.0])
+        s = np.array([sat])
+        v = np.array([1.0])
+        rgb = _hsv_to_rgb_array(h, s, v)[0]
+        return float(rgb[0]) / 255.0, float(rgb[1]) / 255.0, float(rgb[2]) / 255.0
+
+    def _render_nova(self, nova: dict, t_global: float, t_in_slot: float,
+                     alpha: float) -> np.ndarray:
+        """Render a single nova at brightness `alpha` (0..1).
+
+        t_in_slot determines the flash envelope (only valid 0..flash).
+        """
+        cx = nova['cx'] * (self.width - 1)
+        cy = nova['cy'] * (self.height - 1)
+        dx = self.xx - cx
+        dy = self.yy - cy
+        r2 = dx * dx + dy * dy
+        r = np.sqrt(r2)
+
+        # Subtle breathing: tiny sigma wobble + tiny center wobble.
+        breath = 1.0 + 0.05 * np.sin(t_global * nova['undulate_rate'])
+        wobble_x = 0.25 * np.sin(t_global * nova['undulate_rate'] * 0.7)
+        wobble_y = 0.25 * np.cos(t_global * nova['undulate_rate'] * 0.55)
+        r2 = (dx - wobble_x) ** 2 + (dy - wobble_y) ** 2
+
+        core_sigma = max(0.5, nova['core_sigma'] * self._scale * breath)
+        halo_sigma = max(1.0, nova['halo_sigma'] * self._scale * breath)
+        core = np.exp(-r2 / (2.0 * core_sigma * core_sigma))
+        halo = np.exp(-r2 / (2.0 * halo_sigma * halo_sigma))
+
+        # Shape modulates the halo only; core stays a clean dense blob.
+        shape = nova['shape']
+        if shape == 'rings':
+            ring_freq = nova['shape_param']
+            ringwave = 0.5 + 0.5 * np.sin(r * ring_freq - t_global * 0.6)
+            halo = halo * (0.35 + 0.65 * ringwave)
+        elif shape == 'spikes':
+            theta = np.arctan2(dy, dx)
+            n = int(nova['shape_param'])
+            spike = 0.5 + 0.5 * np.cos(n * theta + t_global * 0.25)
+            halo = halo * (0.30 + 0.70 * spike)
+        elif shape == 'spiral':
+            theta = np.arctan2(dy, dx)
+            sp = nova['shape_param']
+            spiral = 0.5 + 0.5 * np.sin(theta * 2.0 + r * sp - t_global * 0.4)
+            halo = halo * (0.30 + 0.70 * spiral)
+
+        # Dim halo so the rest of the strip stays visibly black.
+        halo = halo * float(nova.get('halo_amp', 0.5))
+        # Subtract core from halo so they don't double-add at center.
+        halo = np.clip(halo - core * 0.4, 0.0, None)
+
+        # Double flash: two narrow Gaussians inside the flash window. Boost
+        # the CORE only (the halo doesn't flash).
+        core_boost = 1.0
+        if 0.0 <= t_in_slot <= self.flash:
+            f1 = np.exp(-((t_in_slot - self.flash * 0.20) / (self.flash * 0.06)) ** 2)
+            f2 = np.exp(-((t_in_slot - self.flash * 0.55) / (self.flash * 0.06)) ** 2)
+            core_boost = 1.0 + 3.5 * (f1 + f2)
+
+        cr, cg, cb = self._hue_rgb(nova['core_hue'], nova['core_sat'])
+        hr, hg, hb = self._hue_rgb(nova['halo_hue'], nova['halo_sat'])
+
+        frame = np.zeros((self.height, self.width, 3), dtype=np.float32)
+        core_lit = core * core_boost
+        frame[..., 0] = core_lit * cr + halo * hr
+        frame[..., 1] = core_lit * cg + halo * hg
+        frame[..., 2] = core_lit * cb + halo * hb
+
+        frame *= 255.0 * float(alpha)
+        return frame  # caller clips & casts (so we can sum two for crossfade)
+
+    def generate_frame(self, time: float) -> np.ndarray:
+        n_novas = len(self.NOVAS)
+        cycle_idx = int(time // self.slot)
+        idx = cycle_idx % n_novas
+        t_in = time % self.slot
+        cur = self.NOVAS[idx]
+
+        if t_in < self.fade:
+            # Crossfade window: this nova fades IN (no flash yet),
+            # previous nova fades OUT. On the very first cycle (no
+            # predecessor) we just fade in from black.
+            a_in = t_in / self.fade
+            frame = self._render_nova(cur, time, -1.0, alpha=a_in)
+            if cycle_idx > 0:
+                prev = self.NOVAS[(idx - 1) % n_novas]
+                # The previous nova in this window is at slot offset
+                # (slot - fade + t_in) of its own slot, i.e. inside its
+                # final fade segment. Its undulation looks consistent
+                # because we drive _render_nova with the global time.
+                frame = frame + self._render_nova(
+                    prev, time, -1.0, alpha=1.0 - a_in
+                )
+        elif t_in < self.fade + self.flash:
+            # Just reached full visibility -> double flash from core.
+            flash_t = t_in - self.fade
+            frame = self._render_nova(cur, time, flash_t, alpha=1.0)
+        else:
+            # Long stable undulation.
+            frame = self._render_nova(cur, time, -1.0, alpha=1.0)
+
+        return np.clip(frame, 0.0, 255.0).astype(np.uint8)
+
+
 # Registry of available automations
 AUTOMATION_REGISTRY = {
     'color_wave': ColorWave,
@@ -568,6 +741,7 @@ AUTOMATION_REGISTRY = {
     'tunnel': Tunnel,
     'aurora': Aurora,
     'dark_matter': DarkMatter,
+    'supernova_sampler': SupernovaSampler,
 }
 
 
