@@ -4,19 +4,22 @@
 # have to compile Pi-only GPIO libraries that won't build off-Pi.
 #
 # Install:  python3 -m pip install --user -r ledctl/requirements-host.txt
-flask==3.0.0
-flask-socketio==5.3.5
-python-socketio[client]==5.10.0
-eventlet==0.33.3
-Pillow==10.1.0
-opencv-python==4.8.1.78
-pyyaml==6.0.1
-numpy==1.24.3
-requests==2.31.0
-werkzeug==3.0.1
-python-dotenv==1.0.0
-flask-limiter==3.5.0
-flask-cors==4.0.0
-marshmallow==3.20.1
-redis==5.0.1
-pyserial==3.5
+#
+# Loose pins on C-extension packages so newer Pythons (3.13+) get
+# prebuilt wheels rather than failing to build from source.
+flask>=3.0,<4
+flask-socketio>=5.3.5
+python-socketio[client]>=5.10
+eventlet>=0.36
+Pillow>=11.0
+opencv-python>=4.10
+pyyaml>=6.0
+numpy>=2.1
+requests>=2.31
+werkzeug>=3.0,<4
+python-dotenv>=1.0
+flask-limiter>=3.5
+flask-cors>=4.0
+marshmallow>=3.20
+redis>=5.0
+pyserial>=3.5
