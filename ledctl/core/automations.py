@@ -754,6 +754,187 @@ class SupernovaSampler(ProceduralAnimation):
         return np.clip(frame, 0.0, 255.0).astype(np.uint8)
 
 
+class SupernovaBlend(ProceduralAnimation):
+    """Six supernovas, each crossfading slowly into the next over ~30s.
+
+    Differences vs. supernova_sampler:
+      - Long overlapping crossfade (30s default), not a pan-away.
+      - Core layer is a hard disc with anti-aliased edge (no blur).
+      - Halo shape modulator can be sharpened per-nova so the outer
+        rings/spikes/spirals have hard black gaps between bright bands.
+    """
+
+    NOVAS = [
+        dict(name='crimson_shock',
+             core_hue=0.02, core_sat=1.0,  core_radius=0.030, core_amp=1.8,
+             mid_hue=0.95,  mid_sat=1.0,   mid_sigma=0.10,    mid_amp=0.95,
+             halo_hue=0.52, halo_sat=0.95, halo_sigma=0.22,   halo_amp=0.65,
+             shape='rings', shape_param=2.6, ring_sharpness=8.0,
+             undulate_rate=0.21),
+        dict(name='violet_thorn',
+             core_hue=0.78, core_sat=1.0,  core_radius=0.030, core_amp=1.8,
+             mid_hue=0.85,  mid_sat=1.0,   mid_sigma=0.10,    mid_amp=0.90,
+             halo_hue=0.30, halo_sat=1.0,  halo_sigma=0.24,   halo_amp=0.60,
+             shape='spikes', shape_param=6, ring_sharpness=6.0,
+             undulate_rate=0.17),
+        dict(name='gold_blossom',
+             core_hue=0.13, core_sat=1.0,  core_radius=0.030, core_amp=1.8,
+             mid_hue=0.06,  mid_sat=1.0,   mid_sigma=0.10,    mid_amp=0.95,
+             halo_hue=0.92, halo_sat=0.95, halo_sigma=0.24,   halo_amp=0.65,
+             shape='rings', shape_param=3.4, ring_sharpness=6.0,
+             undulate_rate=0.27),
+        dict(name='glacier_forge',
+             core_hue=0.58, core_sat=1.0,  core_radius=0.030, core_amp=1.8,
+             mid_hue=0.50,  mid_sat=1.0,   mid_sigma=0.10,    mid_amp=0.90,
+             halo_hue=0.08, halo_sat=1.0,  halo_sigma=0.22,   halo_amp=0.60,
+             shape='spiral', shape_param=1.6, ring_sharpness=4.0,
+             undulate_rate=0.19),
+        dict(name='toxic_rays',
+             core_hue=0.40, core_sat=1.0,  core_radius=0.030, core_amp=1.8,
+             mid_hue=0.32,  mid_sat=1.0,   mid_sigma=0.10,    mid_amp=0.95,
+             halo_hue=0.92, halo_sat=0.95, halo_sigma=0.24,   halo_amp=0.55,
+             shape='spikes', shape_param=4, ring_sharpness=8.0,
+             undulate_rate=0.23),
+        dict(name='white_dwarf',
+             core_hue=0.65, core_sat=1.0,  core_radius=0.030, core_amp=1.8,
+             mid_hue=0.72,  mid_sat=1.0,   mid_sigma=0.10,    mid_amp=0.85,
+             halo_hue=0.00, halo_sat=0.0,  halo_sigma=0.24,   halo_amp=0.70,
+             shape='spiral', shape_param=2.7, ring_sharpness=5.0,
+             undulate_rate=0.15),
+    ]
+
+    def __init__(self, width: int, height: int, fps: float = 30,
+                 hold_seconds: float = 30.0,
+                 crossfade_seconds: float = 30.0,
+                 flash_seconds: float = 0.45):
+        super().__init__(width, height, fps)
+        self.hold = float(hold_seconds)
+        self.crossfade = float(crossfade_seconds)
+        self.flash = float(flash_seconds)
+        # Slot = crossfade_in + flash + hold. The crossfade_in of nova N
+        # overlaps in time with the previous nova's last 30s of holding,
+        # so the previous nova fades out as nova N fades in on top.
+        self.slot = self.crossfade + self.flash + self.hold
+        x = np.arange(width, dtype=np.float32)
+        y = np.arange(height, dtype=np.float32)
+        self.xx, self.yy = np.meshgrid(x, y)
+        self._scale = float(min(width, height))
+
+    @staticmethod
+    def _hue_rgb(hue: float, sat: float) -> Tuple[float, float, float]:
+        h = np.array([hue % 1.0])
+        s = np.array([sat])
+        v = np.array([1.0])
+        rgb = _hsv_to_rgb_array(h, s, v)[0]
+        return float(rgb[0]) / 255.0, float(rgb[1]) / 255.0, float(rgb[2]) / 255.0
+
+    @staticmethod
+    def _smoothstep(u: float) -> float:
+        u = max(0.0, min(1.0, u))
+        return u * u * (3.0 - 2.0 * u)
+
+    def _render_nova(self, nova: dict, t_global: float, t_in_slot: float,
+                     alpha: float) -> np.ndarray:
+        """Render one centered nova: hard-disc core + Gaussian mid +
+        shape-modulated Gaussian halo. Returns float32 (no clipping)."""
+        cx = (self.width - 1) / 2.0
+        cy = (self.height - 1) / 2.0
+
+        # Subtle breathing + sub-pixel center wobble.
+        breath = 1.0 + 0.05 * np.sin(t_global * nova['undulate_rate'])
+        wobble_x = 0.25 * np.sin(t_global * nova['undulate_rate'] * 0.7)
+        wobble_y = 0.25 * np.cos(t_global * nova['undulate_rate'] * 0.55)
+        dx = self.xx - cx - wobble_x
+        dy = self.yy - cy - wobble_y
+        r = np.sqrt(dx * dx + dy * dy)
+
+        # CORE: hard disc, 1-px linear AA at the edge so it's crisp at any
+        # supersample factor but doesn't strobe pixel-jagged at low ones.
+        core_radius = max(0.5, nova['core_radius'] * self._scale * breath)
+        core_g = np.clip(core_radius + 0.5 - r, 0.0, 1.0)
+
+        # MID: Gaussian blur, saturated.
+        mid_sigma = max(0.7, nova['mid_sigma'] * self._scale * breath)
+        mid_g = np.exp(-(r * r) / (2.0 * mid_sigma * mid_sigma))
+
+        # HALO: Gaussian blur with shape modulation. Shape uses ring_sharpness
+        # to push the modulator toward 0 or 1, giving hard black gaps
+        # between bright concentrated bands.
+        halo_sigma = max(1.2, nova['halo_sigma'] * self._scale * breath)
+        halo_g = np.exp(-(r * r) / (2.0 * halo_sigma * halo_sigma))
+
+        sharp = float(nova.get('ring_sharpness', 1.0))
+        shape = nova['shape']
+        if shape == 'rings':
+            raw = 0.5 + 0.5 * np.sin(r * nova['shape_param'] - t_global * 0.6)
+        elif shape == 'spikes':
+            theta = np.arctan2(dy, dx)
+            n = int(nova['shape_param'])
+            raw = 0.5 + 0.5 * np.cos(n * theta + t_global * 0.25)
+        elif shape == 'spiral':
+            theta = np.arctan2(dy, dx)
+            raw = 0.5 + 0.5 * np.sin(theta * 2.0 + r * nova['shape_param'] - t_global * 0.4)
+        else:
+            raw = np.ones_like(halo_g)
+        # Sharpen: amplify around 0.5, clip to [0,1]. sharp=1 leaves it alone;
+        # sharp=8 produces nearly square-wave bands with black gaps.
+        modulator = np.clip((raw - 0.5) * sharp + 0.5, 0.0, 1.0)
+        halo_g = halo_g * modulator
+
+        # Hard radial cutoff so the corners stay genuinely black.
+        max_r = halo_sigma * 2.6
+        cutoff = np.clip((max_r + 1.0 - r) / 1.5, 0.0, 1.0)
+        halo_g *= cutoff
+        mid_g *= cutoff
+
+        core_amp = core_g * float(nova['core_amp'])
+        mid_amp = mid_g * float(nova['mid_amp'])
+        halo_amp = halo_g * float(nova['halo_amp'])
+
+        # Double flash: boost only the core.
+        if 0.0 <= t_in_slot <= self.flash:
+            f1 = np.exp(-((t_in_slot - self.flash * 0.20) / (self.flash * 0.06)) ** 2)
+            f2 = np.exp(-((t_in_slot - self.flash * 0.55) / (self.flash * 0.06)) ** 2)
+            core_amp = core_amp * (1.0 + 3.5 * (f1 + f2))
+
+        cr, cg, cb = self._hue_rgb(nova['core_hue'], nova['core_sat'])
+        mr, mg, mb = self._hue_rgb(nova['mid_hue'], nova['mid_sat'])
+        hr, hg, hb = self._hue_rgb(nova['halo_hue'], nova['halo_sat'])
+
+        frame = np.empty((self.height, self.width, 3), dtype=np.float32)
+        frame[..., 0] = core_amp * cr + mid_amp * mr + halo_amp * hr
+        frame[..., 1] = core_amp * cg + mid_amp * mg + halo_amp * hg
+        frame[..., 2] = core_amp * cb + mid_amp * mb + halo_amp * hb
+        frame *= 255.0 * float(alpha)
+        return frame
+
+    def generate_frame(self, time: float) -> np.ndarray:
+        n = len(self.NOVAS)
+        cycle_idx = int(time // self.slot)
+        idx = cycle_idx % n
+        t_in = time % self.slot
+        cur = self.NOVAS[idx]
+
+        if t_in < self.crossfade:
+            # Long crossfade: this nova fades in on top of the previous
+            # nova fading out. On the very first cycle there's no previous.
+            u = self._smoothstep(t_in / self.crossfade)
+            frame = self._render_nova(cur, time, -1.0, alpha=u)
+            if cycle_idx > 0:
+                prev = self.NOVAS[(idx - 1) % n]
+                frame = frame + self._render_nova(prev, time, -1.0,
+                                                  alpha=1.0 - u)
+        elif t_in < self.crossfade + self.flash:
+            # Now fully visible: double flash from the core.
+            flash_t = t_in - self.crossfade
+            frame = self._render_nova(cur, time, flash_t, alpha=1.0)
+        else:
+            # Long stable hold with subtle undulation.
+            frame = self._render_nova(cur, time, -1.0, alpha=1.0)
+
+        return np.clip(frame, 0.0, 255.0).astype(np.uint8)
+
+
 # Registry of available automations
 AUTOMATION_REGISTRY = {
     'color_wave': ColorWave,
@@ -771,6 +952,7 @@ AUTOMATION_REGISTRY = {
     'aurora': Aurora,
     'dark_matter': DarkMatter,
     'supernova_sampler': SupernovaSampler,
+    'supernova_blend': SupernovaBlend,
 }
 
 
