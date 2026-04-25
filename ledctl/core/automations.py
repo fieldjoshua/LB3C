@@ -563,56 +563,67 @@ class SupernovaSampler(ProceduralAnimation):
     # Six novas, distinct shape + color palette per slot. Hues are in [0,1]:
     #   0.00 red, 0.08 orange, 0.13 gold, 0.30 lime, 0.40 emerald,
     #   0.50 cyan, 0.55 ice blue, 0.70 indigo, 0.75 violet, 0.92 hot pink.
+    # Three additive Gaussian layers per nova, all centered:
+    #   core (tiny + intense), mid (medium + saturated), halo (large + shaped).
+    # Halo radius is bounded so at least the corner LEDs of a 10x10 grid stay
+    # genuinely black.
     NOVAS = [
-        # crimson core, cyan shockwave rings, upper-left
         dict(name='crimson_shock',
-             core_hue=0.00, core_sat=1.0, core_sigma=0.07,
+             core_hue=0.02, core_sat=1.0,  core_sigma=0.045, core_amp=1.4,
+             mid_hue=0.95,  mid_sat=1.0,   mid_sigma=0.10,  mid_amp=0.95,
              halo_hue=0.52, halo_sat=0.95, halo_sigma=0.20, halo_amp=0.55,
              shape='rings', shape_param=2.4,
-             cx=0.40, cy=0.40, undulate_rate=0.21),
-        # violet core, lime tendrils, right side
+             undulate_rate=0.21),
         dict(name='violet_thorn',
-             core_hue=0.78, core_sat=0.95, core_sigma=0.08,
-             halo_hue=0.30, halo_sat=1.0, halo_sigma=0.22, halo_amp=0.50,
+             core_hue=0.78, core_sat=1.0,  core_sigma=0.045, core_amp=1.4,
+             mid_hue=0.85,  mid_sat=1.0,   mid_sigma=0.10,  mid_amp=0.90,
+             halo_hue=0.30, halo_sat=1.0,  halo_sigma=0.22, halo_amp=0.50,
              shape='spikes', shape_param=6,
-             cx=0.62, cy=0.45, undulate_rate=0.17),
-        # gold core, hot pink halo, center
+             undulate_rate=0.17),
         dict(name='gold_blossom',
-             core_hue=0.13, core_sat=0.9, core_sigma=0.07,
+             core_hue=0.13, core_sat=1.0,  core_sigma=0.045, core_amp=1.4,
+             mid_hue=0.06,  mid_sat=1.0,   mid_sigma=0.10,  mid_amp=0.95,
              halo_hue=0.92, halo_sat=0.95, halo_sigma=0.22, halo_amp=0.55,
              shape='rings', shape_param=3.2,
-             cx=0.50, cy=0.50, undulate_rate=0.27),
-        # ice-blue core, fire-orange spiral, lower-left
+             undulate_rate=0.27),
         dict(name='glacier_forge',
-             core_hue=0.55, core_sat=0.85, core_sigma=0.07,
-             halo_hue=0.08, halo_sat=1.0, halo_sigma=0.20, halo_amp=0.50,
+             core_hue=0.58, core_sat=1.0,  core_sigma=0.045, core_amp=1.4,
+             mid_hue=0.50,  mid_sat=1.0,   mid_sigma=0.10,  mid_amp=0.90,
+             halo_hue=0.08, halo_sat=1.0,  halo_sigma=0.20, halo_amp=0.55,
              shape='spiral', shape_param=1.5,
-             cx=0.42, cy=0.58, undulate_rate=0.19),
-        # emerald core, hot-pink rays, right of center
+             undulate_rate=0.19),
         dict(name='toxic_rays',
-             core_hue=0.40, core_sat=1.0, core_sigma=0.07,
-             halo_hue=0.92, halo_sat=0.9, halo_sigma=0.22, halo_amp=0.50,
+             core_hue=0.40, core_sat=1.0,  core_sigma=0.045, core_amp=1.4,
+             mid_hue=0.32,  mid_sat=1.0,   mid_sigma=0.10,  mid_amp=0.95,
+             halo_hue=0.92, halo_sat=0.95, halo_sigma=0.22, halo_amp=0.50,
              shape='spikes', shape_param=4,
-             cx=0.55, cy=0.48, undulate_rate=0.23),
-        # deep indigo core, brilliant white spiral halo, center
+             undulate_rate=0.23),
         dict(name='white_dwarf',
-             core_hue=0.70, core_sat=0.85, core_sigma=0.08,
-             halo_hue=0.00, halo_sat=0.0, halo_sigma=0.22, halo_amp=0.60,
+             core_hue=0.65, core_sat=1.0,  core_sigma=0.045, core_amp=1.4,
+             mid_hue=0.72,  mid_sat=1.0,   mid_sigma=0.10,  mid_amp=0.85,
+             halo_hue=0.00, halo_sat=0.0,  halo_sigma=0.22, halo_amp=0.65,
              shape='spiral', shape_param=2.5,
-             cx=0.50, cy=0.50, undulate_rate=0.15),
+             undulate_rate=0.15),
     ]
 
     def __init__(self, width: int, height: int, fps: float = 30,
                  hold_seconds: float = 30.0,
-                 fade_seconds: float = 2.0,
+                 pan_in_seconds: float = 1.2,
+                 pan_out_seconds: float = 1.6,
+                 black_gap_seconds: float = 0.35,
                  flash_seconds: float = 0.45):
         super().__init__(width, height, fps)
         self.hold = float(hold_seconds)
-        self.fade = float(fade_seconds)
+        self.pan_in = float(pan_in_seconds)
+        self.pan_out = float(pan_out_seconds)
+        self.black_gap = float(black_gap_seconds)
         self.flash = float(flash_seconds)
-        # Per-nova slot: fade_in (overlaps with previous nova's fade_out),
-        # then flash burst when fully visible, then long hold/undulate.
-        self.slot = self.fade + self.flash + self.hold
+        # Each nova: pan in (zoom + brighten) -> double flash at peak ->
+        # long hold with subtle undulation -> pan out (shrink + dim) ->
+        # brief pure-black beat before the next nova zooms in.
+        self.slot = (
+            self.pan_in + self.flash + self.hold + self.pan_out + self.black_gap
+        )
         x = np.arange(width, dtype=np.float32)
         y = np.arange(height, dtype=np.float32)
         self.xx, self.yy = np.meshgrid(x, y)
@@ -627,100 +638,118 @@ class SupernovaSampler(ProceduralAnimation):
         return float(rgb[0]) / 255.0, float(rgb[1]) / 255.0, float(rgb[2]) / 255.0
 
     def _render_nova(self, nova: dict, t_global: float, t_in_slot: float,
-                     alpha: float) -> np.ndarray:
-        """Render a single nova at brightness `alpha` (0..1).
+                     alpha: float, scale: float = 1.0) -> np.ndarray:
+        """Render one centered nova with three additive Gaussian layers.
 
-        t_in_slot determines the flash envelope (only valid 0..flash).
+        alpha     - global brightness multiplier (0..1) for fade-in / pan-out
+        scale     - radial scale (1.0 normal, <1 shrunken for pan effect)
+        t_in_slot - flash envelope position (negative = no flash this frame)
         """
-        cx = nova['cx'] * (self.width - 1)
-        cy = nova['cy'] * (self.height - 1)
-        dx = self.xx - cx
-        dy = self.yy - cy
-        r2 = dx * dx + dy * dy
-        r = np.sqrt(r2)
+        # Always centered.
+        cx = (self.width - 1) / 2.0
+        cy = (self.height - 1) / 2.0
 
-        # Subtle breathing: tiny sigma wobble + tiny center wobble.
+        # Subtle breathing + sub-pixel center wobble.
         breath = 1.0 + 0.05 * np.sin(t_global * nova['undulate_rate'])
         wobble_x = 0.25 * np.sin(t_global * nova['undulate_rate'] * 0.7)
         wobble_y = 0.25 * np.cos(t_global * nova['undulate_rate'] * 0.55)
-        r2 = (dx - wobble_x) ** 2 + (dy - wobble_y) ** 2
+        dx = self.xx - cx - wobble_x
+        dy = self.yy - cy - wobble_y
+        r2 = dx * dx + dy * dy
+        r = np.sqrt(r2)
 
-        core_sigma = max(0.5, nova['core_sigma'] * self._scale * breath)
-        halo_sigma = max(1.0, nova['halo_sigma'] * self._scale * breath)
-        core = np.exp(-r2 / (2.0 * core_sigma * core_sigma))
-        halo = np.exp(-r2 / (2.0 * halo_sigma * halo_sigma))
+        sf = float(scale) * breath
+        core_sigma = max(0.35, nova['core_sigma'] * self._scale * sf)
+        mid_sigma = max(0.7, nova['mid_sigma'] * self._scale * sf)
+        halo_sigma = max(1.2, nova['halo_sigma'] * self._scale * sf)
+        core_g = np.exp(-r2 / (2.0 * core_sigma * core_sigma))
+        mid_g = np.exp(-r2 / (2.0 * mid_sigma * mid_sigma))
+        halo_g = np.exp(-r2 / (2.0 * halo_sigma * halo_sigma))
 
-        # Shape modulates the halo only; core stays a clean dense blob.
+        # Shape modulates the outer halo only; core and mid stay clean blobs.
         shape = nova['shape']
         if shape == 'rings':
-            ring_freq = nova['shape_param']
-            ringwave = 0.5 + 0.5 * np.sin(r * ring_freq - t_global * 0.6)
-            halo = halo * (0.35 + 0.65 * ringwave)
+            ringwave = 0.5 + 0.5 * np.sin(r * nova['shape_param'] - t_global * 0.6)
+            halo_g = halo_g * (0.35 + 0.65 * ringwave)
         elif shape == 'spikes':
             theta = np.arctan2(dy, dx)
             n = int(nova['shape_param'])
             spike = 0.5 + 0.5 * np.cos(n * theta + t_global * 0.25)
-            halo = halo * (0.30 + 0.70 * spike)
+            halo_g = halo_g * (0.30 + 0.70 * spike)
         elif shape == 'spiral':
             theta = np.arctan2(dy, dx)
-            sp = nova['shape_param']
-            spiral = 0.5 + 0.5 * np.sin(theta * 2.0 + r * sp - t_global * 0.4)
-            halo = halo * (0.30 + 0.70 * spiral)
+            spiral = 0.5 + 0.5 * np.sin(theta * 2.0 + r * nova['shape_param'] - t_global * 0.4)
+            halo_g = halo_g * (0.30 + 0.70 * spiral)
 
-        # Dim halo so the rest of the strip stays visibly black.
-        halo = halo * float(nova.get('halo_amp', 0.5))
-        # Subtract core from halo so they don't double-add at center.
-        halo = np.clip(halo - core * 0.4, 0.0, None)
+        # Hard radial cutoff: anything past 2.6 sigma of the halo (with a
+        # 1-pixel feather) is forced black so the corners stay genuinely
+        # dark even at small grids.
+        max_r = halo_sigma * 2.6
+        cutoff = np.clip((max_r + 1.0 - r) / 1.5, 0.0, 1.0)
+        halo_g *= cutoff
+        mid_g *= cutoff
 
-        # Double flash: two narrow Gaussians inside the flash window. Boost
-        # the CORE only (the halo doesn't flash).
-        core_boost = 1.0
+        # Apply layer amplitudes.
+        core_amp = core_g * float(nova['core_amp'])
+        mid_amp = mid_g * float(nova['mid_amp'])
+        halo_amp = halo_g * float(nova['halo_amp'])
+
+        # Double flash: boost the core only.
         if 0.0 <= t_in_slot <= self.flash:
             f1 = np.exp(-((t_in_slot - self.flash * 0.20) / (self.flash * 0.06)) ** 2)
             f2 = np.exp(-((t_in_slot - self.flash * 0.55) / (self.flash * 0.06)) ** 2)
-            core_boost = 1.0 + 3.5 * (f1 + f2)
+            core_amp = core_amp * (1.0 + 3.5 * (f1 + f2))
 
         cr, cg, cb = self._hue_rgb(nova['core_hue'], nova['core_sat'])
+        mr, mg, mb = self._hue_rgb(nova['mid_hue'], nova['mid_sat'])
         hr, hg, hb = self._hue_rgb(nova['halo_hue'], nova['halo_sat'])
 
-        frame = np.zeros((self.height, self.width, 3), dtype=np.float32)
-        core_lit = core * core_boost
-        frame[..., 0] = core_lit * cr + halo * hr
-        frame[..., 1] = core_lit * cg + halo * hg
-        frame[..., 2] = core_lit * cb + halo * hb
-
+        frame = np.empty((self.height, self.width, 3), dtype=np.float32)
+        frame[..., 0] = core_amp * cr + mid_amp * mr + halo_amp * hr
+        frame[..., 1] = core_amp * cg + mid_amp * mg + halo_amp * hg
+        frame[..., 2] = core_amp * cb + mid_amp * mb + halo_amp * hb
         frame *= 255.0 * float(alpha)
-        return frame  # caller clips & casts (so we can sum two for crossfade)
+        return frame  # caller clips & casts
+
+    @staticmethod
+    def _smoothstep(u: float) -> float:
+        u = max(0.0, min(1.0, u))
+        return u * u * (3.0 - 2.0 * u)
 
     def generate_frame(self, time: float) -> np.ndarray:
         n_novas = len(self.NOVAS)
-        cycle_idx = int(time // self.slot)
-        idx = cycle_idx % n_novas
+        idx = int(time // self.slot) % n_novas
         t_in = time % self.slot
         cur = self.NOVAS[idx]
 
-        if t_in < self.fade:
-            # Crossfade window: this nova fades IN (no flash yet),
-            # previous nova fades OUT. On the very first cycle (no
-            # predecessor) we just fade in from black.
-            a_in = t_in / self.fade
-            frame = self._render_nova(cur, time, -1.0, alpha=a_in)
-            if cycle_idx > 0:
-                prev = self.NOVAS[(idx - 1) % n_novas]
-                # The previous nova in this window is at slot offset
-                # (slot - fade + t_in) of its own slot, i.e. inside its
-                # final fade segment. Its undulation looks consistent
-                # because we drive _render_nova with the global time.
-                frame = frame + self._render_nova(
-                    prev, time, -1.0, alpha=1.0 - a_in
-                )
-        elif t_in < self.fade + self.flash:
-            # Just reached full visibility -> double flash from core.
-            flash_t = t_in - self.fade
-            frame = self._render_nova(cur, time, flash_t, alpha=1.0)
+        # Phase boundaries (cumulative).
+        b1 = self.pan_in
+        b2 = b1 + self.flash
+        b3 = b2 + self.hold
+        b4 = b3 + self.pan_out
+        # b4..slot is the black gap.
+
+        if t_in < b1:
+            # Pan in: zoom from 30% scale to full while alpha 0 -> 1.
+            u = self._smoothstep(t_in / self.pan_in)
+            scale = 0.3 + 0.7 * u
+            frame = self._render_nova(cur, time, -1.0, alpha=u, scale=scale)
+        elif t_in < b2:
+            # Double flash at full size.
+            flash_t = t_in - b1
+            frame = self._render_nova(cur, time, flash_t, alpha=1.0, scale=1.0)
+        elif t_in < b3:
+            # Long undulation hold.
+            frame = self._render_nova(cur, time, -1.0, alpha=1.0, scale=1.0)
+        elif t_in < b4:
+            # Pan away: shrink from full to ~10% while alpha 1 -> 0.
+            u = self._smoothstep((t_in - b3) / self.pan_out)
+            scale = 1.0 - 0.9 * u
+            frame = self._render_nova(cur, time, -1.0,
+                                      alpha=1.0 - u, scale=max(scale, 0.05))
         else:
-            # Long stable undulation.
-            frame = self._render_nova(cur, time, -1.0, alpha=1.0)
+            # Pure-black beat between novas. One frame's worth of nothing.
+            return np.zeros((self.height, self.width, 3), dtype=np.uint8)
 
         return np.clip(frame, 0.0, 255.0).astype(np.uint8)
 
