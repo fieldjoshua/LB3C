@@ -501,6 +501,57 @@ class Aurora(ProceduralAnimation):
         return _hsv_to_rgb_array(hue, s, v)
 
 
+class DarkMatter(ProceduralAnimation):
+    """Sparse glowing particles drifting on a black field. Pairs with --fade."""
+
+    def __init__(self, width: int, height: int, fps: float = 30,
+                 num_particles: int = 5, speed: float = 0.4,
+                 sigma_frac: float = 0.07, hue_drift: float = 0.02,
+                 seed: int = 42):
+        super().__init__(width, height, fps)
+        self.num = max(1, int(num_particles))
+        self.speed = speed
+        # Scale sigma with grid so particles look the same size whether
+        # the animation is rendered at 10x10 or supersampled at 40x40.
+        self.sigma = max(0.6, float(sigma_frac) * min(width, height))
+        self.hue_drift = hue_drift
+        rng = np.random.default_rng(seed)
+        self.centers_x = rng.uniform(0.2, 0.8, self.num) * width
+        self.centers_y = rng.uniform(0.2, 0.8, self.num) * height
+        self.radii = rng.uniform(0.15, 0.4, self.num) * min(width, height)
+        self.angular_v = rng.uniform(-1.0, 1.0, self.num)
+        # Some particles also drift their orbit center (longer cycles).
+        self.drift_v = rng.uniform(-0.15, 0.15, (self.num, 2))
+        self.phase0 = rng.uniform(0, 2 * np.pi, self.num)
+        self.hues = rng.uniform(0, 1, self.num)
+        self.xx, self.yy = np.meshgrid(
+            np.arange(width, dtype=np.float32),
+            np.arange(height, dtype=np.float32),
+        )
+        self._two_sigma_sq = 2.0 * self.sigma * self.sigma
+
+    def generate_frame(self, time: float) -> np.ndarray:
+        accum = np.zeros((self.height, self.width, 3), dtype=np.float32)
+        h_ones = np.empty_like(self.xx)
+        s_field = np.full_like(self.xx, 0.85)
+        for i in range(self.num):
+            angle = self.phase0[i] + time * self.speed * self.angular_v[i]
+            cx = self.centers_x[i] + self.radii[i] * np.cos(angle)
+            cy = self.centers_y[i] + self.radii[i] * np.sin(angle)
+            cx += self.drift_v[i, 0] * time
+            cy += self.drift_v[i, 1] * time
+            # Wrap-around so particles don't escape the grid.
+            cx = cx % self.width
+            cy = cy % self.height
+            d2 = (self.xx - cx) ** 2 + (self.yy - cy) ** 2
+            amp = np.exp(-d2 / self._two_sigma_sq)
+            hue = (self.hues[i] + time * self.hue_drift) % 1.0
+            h_ones.fill(hue)
+            rgb = _hsv_to_rgb_array(h_ones, s_field, amp).astype(np.float32)
+            accum += rgb
+        return np.clip(accum, 0.0, 255.0).astype(np.uint8)
+
+
 # Registry of available automations
 AUTOMATION_REGISTRY = {
     'color_wave': ColorWave,
@@ -516,6 +567,7 @@ AUTOMATION_REGISTRY = {
     'plasma_flow': PlasmaFlow,
     'tunnel': Tunnel,
     'aurora': Aurora,
+    'dark_matter': DarkMatter,
 }
 
 

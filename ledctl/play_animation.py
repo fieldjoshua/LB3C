@@ -112,6 +112,11 @@ def main() -> int:
                     help="render animation at N*width by N*height internally "
                          "and average down. Smooth gradients on a coarse "
                          "strip. 1=off (default), 4 is a good starting point.")
+    ap.add_argument("--fade", type=float, default=0.0, metavar="F",
+                    help="persistence / trail effect. 0=off (default), "
+                         "0.85 nice trails, 0.95 long trails, 1.0 never fades. "
+                         "Each frame the previous frame is multiplied by F "
+                         "and pixel-max-blended with the new content.")
     ap.add_argument("-v", "--verbose", action="store_true")
 
     args = ap.parse_args()
@@ -172,6 +177,11 @@ def main() -> int:
     next_tick = t0
     frames_sent = 0
     last_report = t0
+    fade = max(0.0, min(1.0, float(args.fade)))
+    persist = (
+        np.zeros((args.height, args.width, 3), dtype=np.float32)
+        if fade > 0.0 else None
+    )
     try:
         while not stop_requested["value"]:
             now = time.monotonic()
@@ -188,6 +198,13 @@ def main() -> int:
                     .mean(axis=(1, 3))
                     .astype(np.uint8)
                 )
+            if persist is not None:
+                # Decay the persistence buffer; take per-channel max with the
+                # new frame so bright moving features leave fading trails
+                # instead of dimming everything.
+                persist *= fade
+                np.maximum(persist, np_frame.astype(np.float32), out=persist)
+                np_frame = persist.astype(np.uint8)
             beat_mul = beat_envelope(
                 anim_t, args.bpm or 0.0, args.beat_shape,
                 args.beat_floor, args.beat_decay, args.beat_offset,
