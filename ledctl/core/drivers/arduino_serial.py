@@ -39,7 +39,8 @@ class ArduinoSerialDevice(OutputDevice):
     """Arduino-over-USB LED driver using the Adalight protocol."""
 
     DEFAULT_BAUD = 500000
-    DEFAULT_HANDSHAKE_TIMEOUT = 3.0
+    # Long enough to cover Nano bootloader (~1.5s) + sketch start + banner.
+    DEFAULT_HANDSHAKE_TIMEOUT = 4.0
     MAGIC = b"Ada"
 
     def __init__(self, config: Dict[str, Any]):
@@ -177,12 +178,14 @@ class ArduinoSerialDevice(OutputDevice):
                 time.sleep(0.1)
                 self._ser.reset_input_buffer()
                 self._ser.setDTR(True)
-                # Nano bootloader takes ~1.5s after DTR pulse
-                time.sleep(1.8)
-            self._ser.reset_input_buffer()
+                # Bootloader takes ~1.5s after the DTR pulse, then the sketch
+                # emits its 'Ada\n' banner exactly once. Don't flush again
+                # below or we lose it.
 
             if self.wait_for_handshake:
                 self._await_ready()
+            else:
+                self._ser.reset_input_buffer()
 
             self.port = port
             self.is_open = True
