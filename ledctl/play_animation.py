@@ -108,6 +108,10 @@ def main() -> int:
                          "square=on/off")
     ap.add_argument("--beat-offset", type=float, default=0.0,
                     help="phase offset in beats (e.g. 0.5 to flip pulse)")
+    ap.add_argument("--supersample", type=int, default=1, metavar="N",
+                    help="render animation at N*width by N*height internally "
+                         "and average down. Smooth gradients on a coarse "
+                         "strip. 1=off (default), 4 is a good starting point.")
     ap.add_argument("-v", "--verbose", action="store_true")
 
     args = ap.parse_args()
@@ -131,7 +135,9 @@ def main() -> int:
         return 2
 
     cls = AUTOMATION_REGISTRY[args.name]
-    anim = cls(args.width, args.height, fps=args.fps)
+    ss = max(1, int(args.supersample))
+    inner_w, inner_h = args.width * ss, args.height * ss
+    anim = cls(inner_w, inner_h, fps=args.fps)
 
     count = args.count if args.count is not None else args.width * args.height
     dev = ArduinoSerialDevice({
@@ -148,8 +154,10 @@ def main() -> int:
 
     beat_msg = (f", pulsing at {args.bpm:g} bpm ({args.beat_shape})"
                 if args.bpm else "")
+    ss_msg = f", supersample {ss}x ({inner_w}x{inner_h} internal)" if ss > 1 else ""
     print(f"playing {args.name!r} on {args.width}x{args.height} "
-          f"({count} LEDs) at {args.fps:g} fps{beat_msg}. Ctrl-C to stop.")
+          f"({count} LEDs) at {args.fps:g} fps{beat_msg}{ss_msg}. "
+          f"Ctrl-C to stop.")
 
     dev.open()
 
@@ -172,6 +180,14 @@ def main() -> int:
 
             anim_t = now - t0
             np_frame = anim.generate_frame(anim_t)
+            if ss > 1:
+                # Block-average ss x ss neighborhoods down to (height, width).
+                np_frame = (
+                    np_frame.astype(np.float32)
+                    .reshape(args.height, ss, args.width, ss, 3)
+                    .mean(axis=(1, 3))
+                    .astype(np.uint8)
+                )
             beat_mul = beat_envelope(
                 anim_t, args.bpm or 0.0, args.beat_shape,
                 args.beat_floor, args.beat_decay, args.beat_offset,
