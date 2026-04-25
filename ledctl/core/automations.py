@@ -348,8 +348,157 @@ class Checkerboard(ProceduralAnimation):
                     frame[y, x] = self.color1
                 else:
                     frame[y, x] = self.color2
-                    
+
         return frame
+
+
+def _hsv_to_rgb_array(h: np.ndarray, s: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """Vectorized HSV->RGB. Inputs in [0,1], any shape. Returns uint8 (..., 3)."""
+    h = (h % 1.0) * 6.0
+    i = np.floor(h).astype(np.int32) % 6
+    f = h - np.floor(h)
+    p = v * (1.0 - s)
+    q = v * (1.0 - f * s)
+    t = v * (1.0 - (1.0 - f) * s)
+    r = np.choose(i, [v, q, p, p, t, v])
+    g = np.choose(i, [t, v, v, q, p, p])
+    b = np.choose(i, [p, p, t, v, v, q])
+    rgb = np.stack([r, g, b], axis=-1)
+    return np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
+
+
+class Metaballs(ProceduralAnimation):
+    """Soft glowing blobs that orbit and merge. Smooth at low resolution."""
+
+    def __init__(self, width: int, height: int, fps: float = 30,
+                 num_balls: int = 3, speed: float = 0.7,
+                 hue_speed: float = 0.04):
+        super().__init__(width, height, fps)
+        self.num_balls = max(1, int(num_balls))
+        self.speed = speed
+        self.hue_speed = hue_speed
+        self.xx, self.yy = np.meshgrid(
+            np.arange(width, dtype=np.float32),
+            np.arange(height, dtype=np.float32),
+        )
+        # Each ball gets distinct phase + frequency so they don't sync up.
+        self.phases = np.linspace(0, 2 * np.pi, self.num_balls, endpoint=False)
+        self.freqs_x = 1.0 + 0.3 * np.arange(self.num_balls)
+        self.freqs_y = 1.3 + 0.4 * np.arange(self.num_balls)
+        self.radius = (width + height) / 6.0
+
+    def generate_frame(self, time: float) -> np.ndarray:
+        field = np.zeros((self.height, self.width), dtype=np.float32)
+        for i in range(self.num_balls):
+            cx = self.width * (0.5 + 0.4 * np.sin(time * self.speed * self.freqs_x[i] + self.phases[i]))
+            cy = self.height * (0.5 + 0.4 * np.cos(time * self.speed * self.freqs_y[i] + self.phases[i]))
+            d2 = (self.xx - cx) ** 2 + (self.yy - cy) ** 2
+            field += (self.radius * self.radius) / (d2 + 0.5)
+        v = np.tanh(field / float(self.num_balls))
+        h = (field * 0.04 + time * self.hue_speed) % 1.0
+        s = np.clip(0.6 + 0.3 * v, 0.0, 1.0)
+        return _hsv_to_rgb_array(h, s, v)
+
+
+class PlasmaFlow(ProceduralAnimation):
+    """Sum-of-sines plasma with brightness shading. Replaces the boxy Plasma."""
+
+    def __init__(self, width: int, height: int, fps: float = 30,
+                 speed: float = 0.6, hue_speed: float = 0.07):
+        super().__init__(width, height, fps)
+        self.speed = speed
+        self.hue_speed = hue_speed
+        x = np.linspace(0.0, 1.0, max(width, 2), dtype=np.float32)
+        y = np.linspace(0.0, 1.0, max(height, 2), dtype=np.float32)
+        self.xx, self.yy = np.meshgrid(x[:width], y[:height])
+
+    def generate_frame(self, time: float) -> np.ndarray:
+        t = time * self.speed
+        cx = self.xx - 0.5
+        cy = self.yy - 0.5
+        v = (
+            np.sin(self.xx * 6.0 + t)
+            + np.sin(self.yy * 6.0 + t * 1.3)
+            + np.sin((self.xx + self.yy) * 5.0 + t * 0.7)
+            + np.sin(np.sqrt(cx * cx + cy * cy) * 14.0 - t * 1.1)
+        ) * 0.25  # roughly in [-1, 1]
+        h = (v * 0.5 + 0.5 + time * self.hue_speed) % 1.0
+        s = np.full_like(v, 0.85)
+        bright = 0.55 + 0.45 * v  # gives shading, not flat fully-bright
+        bright = np.clip(bright, 0.05, 1.0)
+        return _hsv_to_rgb_array(h, s, bright)
+
+
+class Tunnel(ProceduralAnimation):
+    """Hypnotic radial tunnel. Twisting bands move toward / away from center."""
+
+    def __init__(self, width: int, height: int, fps: float = 30,
+                 zoom_speed: float = 0.6, twist: float = 2.0,
+                 hue_speed: float = 0.08):
+        super().__init__(width, height, fps)
+        self.zoom_speed = zoom_speed
+        self.twist = twist
+        self.hue_speed = hue_speed
+        cx = (width - 1) / 2.0
+        cy = (height - 1) / 2.0
+        xx, yy = np.meshgrid(
+            np.arange(width, dtype=np.float32) - cx,
+            np.arange(height, dtype=np.float32) - cy,
+        )
+        max_r = max(np.hypot(cx, cy), 1.0)
+        self.r = np.hypot(xx, yy) / max_r
+        self.theta = np.arctan2(yy, xx) / (2.0 * np.pi)
+
+    def generate_frame(self, time: float) -> np.ndarray:
+        u = self.twist * self.theta + 1.0 / (self.r + 0.15) + time * self.zoom_speed
+        h = (u * 0.15 + time * self.hue_speed) % 1.0
+        bands = 0.5 + 0.5 * np.sin(u * 2.0 * np.pi)
+        # Vignette: dim toward edges so the tunnel feels deeper.
+        vignette = np.clip(1.0 - 0.6 * self.r * self.r, 0.0, 1.0)
+        v = np.clip(bands * (0.4 + 0.6 * vignette), 0.0, 1.0)
+        s = np.full_like(v, 0.9)
+        return _hsv_to_rgb_array(h, s, v)
+
+
+class Aurora(ProceduralAnimation):
+    """Northern-lights ribbons drifting horizontally. Cool palette, soft."""
+
+    def __init__(self, width: int, height: int, fps: float = 30,
+                 drift_speed: float = 0.4, ribbon_count: int = 2,
+                 hue_center: float = 0.42, hue_range: float = 0.18):
+        super().__init__(width, height, fps)
+        self.drift_speed = drift_speed
+        self.ribbon_count = max(1, int(ribbon_count))
+        self.hue_center = hue_center  # 0.42 = teal-green
+        self.hue_range = hue_range
+        x = np.arange(width, dtype=np.float32)
+        y = np.arange(height, dtype=np.float32)
+        self.xx, self.yy = np.meshgrid(x, y)
+        self.y_norm = self.yy / max(height - 1, 1)
+
+    def generate_frame(self, time: float) -> np.ndarray:
+        t = time * self.drift_speed
+        # Sum of slow sines per ribbon, each centered at a different Y.
+        intensity = np.zeros((self.height, self.width), dtype=np.float32)
+        hue_field = np.zeros_like(intensity)
+        for i in range(self.ribbon_count):
+            y_center = (i + 1) / (self.ribbon_count + 1)
+            wob = (
+                0.10 * np.sin(self.xx * 0.55 + t * (1.0 + 0.3 * i))
+                + 0.06 * np.sin(self.xx * 0.27 + t * 0.7)
+            )
+            band = np.exp(-((self.y_norm - y_center - wob) ** 2) / 0.012)
+            intensity += band
+            hue_field += band * (i / max(1, self.ribbon_count - 1))
+        v = np.clip(intensity, 0.0, 1.0)
+        # Hue centered on aurora green, wandering slightly with the field.
+        hue = (
+            self.hue_center
+            + (hue_field / max(self.ribbon_count, 1) - 0.5) * self.hue_range
+            + 0.05 * np.sin(time * 0.2)
+        ) % 1.0
+        s = np.full_like(v, 0.75)
+        return _hsv_to_rgb_array(hue, s, v)
 
 
 # Registry of available automations
@@ -363,6 +512,10 @@ AUTOMATION_REGISTRY = {
     'strobe': Strobe,
     'breathe': Breathe,
     'checkerboard': Checkerboard,
+    'metaballs': Metaballs,
+    'plasma_flow': PlasmaFlow,
+    'tunnel': Tunnel,
+    'aurora': Aurora,
 }
 
 
