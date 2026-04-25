@@ -42,6 +42,28 @@ def list_animations() -> None:
         print(f"  {name:14s}  {summary}")
 
 
+def beat_envelope(t: float, bpm: float, shape: str, floor: float,
+                  decay: float, offset_beats: float) -> float:
+    """Brightness multiplier in [floor, 1.0] synced to BPM.
+
+    punch  - exponential decay each beat (peak on the beat, fade until next)
+    sine   - smooth oscillation, peak on the beat
+    square - on for first half of each beat, at floor for second half
+    """
+    if bpm <= 0:
+        return 1.0
+    beats = t * (bpm / 60.0) - offset_beats
+    phase = beats - np.floor(beats)  # 0..1 within current beat
+    if shape == "sine":
+        # cosine peaks at phase=0 (the beat)
+        v = 0.5 + 0.5 * float(np.cos(2.0 * np.pi * phase))
+    elif shape == "square":
+        v = 1.0 if phase < 0.5 else 0.0
+    else:  # "punch"
+        v = float(np.exp(-decay * phase))
+    return floor + (1.0 - floor) * v
+
+
 def frame_to_rgb_list(
     frame: np.ndarray, brightness: float
 ) -> List[Tuple[int, int, int]]:
@@ -71,6 +93,21 @@ def main() -> int:
     ap.add_argument("--order", default="GRB", help="strip color order")
     ap.add_argument("--layout", default="serpentine",
                     choices=["serpentine", "linear"])
+    ap.add_argument("--bpm", type=float, default=None,
+                    help="pulse brightness to this tempo (e.g. 120). "
+                         "Off if not set. Combine with --beat-floor / "
+                         "--beat-decay / --beat-shape to tune the pulse.")
+    ap.add_argument("--beat-floor", type=float, default=0.2,
+                    help="minimum brightness between beats (0..1, default 0.2)")
+    ap.add_argument("--beat-decay", type=float, default=4.0,
+                    help="exponential decay rate per beat (higher = punchier, "
+                         "default 4.0)")
+    ap.add_argument("--beat-shape", default="punch",
+                    choices=["punch", "sine", "square"],
+                    help="envelope shape: punch=exp decay, sine=smooth, "
+                         "square=on/off")
+    ap.add_argument("--beat-offset", type=float, default=0.0,
+                    help="phase offset in beats (e.g. 0.5 to flip pulse)")
     ap.add_argument("-v", "--verbose", action="store_true")
 
     args = ap.parse_args()
@@ -109,8 +146,10 @@ def main() -> int:
         }
     })
 
+    beat_msg = (f", pulsing at {args.bpm:g} bpm ({args.beat_shape})"
+                if args.bpm else "")
     print(f"playing {args.name!r} on {args.width}x{args.height} "
-          f"({count} LEDs) at {args.fps:g} fps. Ctrl-C to stop.")
+          f"({count} LEDs) at {args.fps:g} fps{beat_msg}. Ctrl-C to stop.")
 
     dev.open()
 
@@ -133,7 +172,11 @@ def main() -> int:
 
             anim_t = now - t0
             np_frame = anim.generate_frame(anim_t)
-            rgb_data = frame_to_rgb_list(np_frame, args.brightness)
+            beat_mul = beat_envelope(
+                anim_t, args.bpm or 0.0, args.beat_shape,
+                args.beat_floor, args.beat_decay, args.beat_offset,
+            ) if args.bpm else 1.0
+            rgb_data = frame_to_rgb_list(np_frame, args.brightness * beat_mul)
             dev.draw_rgb_frame(args.width, args.height, rgb_data)
             frames_sent += 1
 
