@@ -1370,25 +1370,19 @@ class FireworksShow(ProceduralAnimation):
 
     def _launch_tracer(self, target_x: float, apex_y: float,
                        burst_kind: str, burst_hue: float, burst_size: float):
-        """Send a tracer up that bursts at apex_y."""
-        ascent = self._rng.uniform(0.9, 1.3)
-        # Vertical: start at horizon, decelerate so vy=0 at apex_y. With
-        # gravity g, time to reach apex from initial vy0 is t_apex = -vy0/g
-        # and dy = vy0 * t_apex + 0.5 * g * t_apex^2 = -vy0^2 / (2g).
-        # So vy0 = -sqrt(2 * g * (horizon - apex)). Negative = upward.
-        dy = self.horizon_y - apex_y
-        vy0 = -np.sqrt(max(0.5, 2.0 * self.g * dy))
-        # Horizontal: simple constant velocity to drift to target_x.
-        x0 = self.horizon_y * 0 + self._rng.uniform(0.05, 0.95) * (self.width - 1)
-        # Anchor x near target so the trail goes mostly straight up.
-        x0 = target_x + self._rng.uniform(-0.05, 0.05) * self.width
-        # Time to reach apex (when vy = 0):
+        """Send a tracer straight up from the horizon to apex_y."""
+        # Start at target_x exactly so the tracer goes purely vertical
+        # (no left-right drift visible on the strip).
+        x0 = target_x
+        # Vertical ballistics: vy0 = -sqrt(2 * g * (horizon - apex)) so vy
+        # reaches zero exactly at apex_y. Negative = upward.
+        dy = max(0.5, self.horizon_y - apex_y)
+        vy0 = -np.sqrt(2.0 * self.g * dy)
         t_apex = -vy0 / self.g
-        vx0 = (target_x - x0) / max(0.2, t_apex)
-        # Tracer color: warm gold/white. Burst color stored separately.
-        tracer_size = max(0.5, self._scale * 0.05)
+        # Tracer is small - target ~half an LED at the output resolution.
+        tracer_size = max(0.4, self._scale * 0.025)
         self._spawn_one(
-            x=x0, y=self.horizon_y, vx=vx0, vy=vy0, life=t_apex,
+            x=x0, y=self.horizon_y, vx=0.0, vy=vy0, life=t_apex,
             hue=0.13, sat=0.30, size=tracer_size,
             kind=self.K_TRACER, gmul=1.0,
             burst_kind=burst_kind, burst_hue=burst_hue, burst_size=burst_size,
@@ -1402,33 +1396,35 @@ class FireworksShow(ProceduralAnimation):
         # an LED at the output resolution after supersample averaging.
         size_px = max(0.5, self._scale * 0.045)
 
+        # Speed scale: in pixels/sec at this resolution. Tuned so big bursts
+        # cross most of the strip during their lifetime.
         if kind == 'peony':
             n = 24
-            speed = self._rng.uniform(5.0, 7.5) * s * size_mul
+            speed = self._rng.uniform(18.0, 26.0) * s * size_mul
             for i in range(n):
                 ang = (2 * np.pi * i / n) + self._rng.uniform(-0.07, 0.07)
                 spd = speed * self._rng.uniform(0.85, 1.15)
                 self._spawn_one(
                     x=x, y=y, vx=spd * np.cos(ang), vy=spd * np.sin(ang),
-                    life=self._rng.uniform(1.0, 1.5),
+                    life=self._rng.uniform(1.2, 1.8),
                     hue=(hue + self._rng.uniform(-0.02, 0.02)) % 1.0,
                     sat=1.0, size=size_px, kind=self.K_SPARK,
                 )
         elif kind == 'chrysanthemum':
             n = 30
-            speed = self._rng.uniform(4.5, 7.0) * s * size_mul
+            speed = self._rng.uniform(20.0, 32.0) * s * size_mul
             for i in range(n):
                 ang = (2 * np.pi * i / n) + self._rng.uniform(-0.05, 0.05)
                 spd = speed * self._rng.uniform(0.7, 1.3)
                 self._spawn_one(
                     x=x, y=y, vx=spd * np.cos(ang), vy=spd * np.sin(ang),
-                    life=self._rng.uniform(1.6, 2.4),
+                    life=self._rng.uniform(1.8, 2.6),
                     hue=(hue + self._rng.uniform(-0.04, 0.04)) % 1.0,
                     sat=1.0, size=size_px, kind=self.K_SPARK,
                 )
         elif kind == 'willow':
             n = 22
-            speed = self._rng.uniform(3.5, 5.5) * s * size_mul
+            speed = self._rng.uniform(15.0, 22.0) * s * size_mul
             for i in range(n):
                 ang = (2 * np.pi * i / n) + self._rng.uniform(-0.06, 0.06)
                 # Bias velocity slightly upward so droops feel right.
@@ -1436,28 +1432,28 @@ class FireworksShow(ProceduralAnimation):
                 self._spawn_one(
                     x=x, y=y,
                     vx=spd * np.cos(ang) * 0.7,
-                    vy=spd * np.sin(ang) - 1.0 * s,
-                    life=self._rng.uniform(2.2, 3.2),
+                    vy=spd * np.sin(ang) - 4.0 * s,
+                    life=self._rng.uniform(2.4, 3.5),
                     hue=(hue + self._rng.uniform(-0.02, 0.02)) % 1.0,
                     sat=0.8, size=size_px,
                     kind=self.K_HEAVY, gmul=1.6,
                 )
         elif kind == 'ring':
             n = 28
-            speed = self._rng.uniform(5.5, 7.0) * s * size_mul
+            speed = self._rng.uniform(22.0, 30.0) * s * size_mul
             jit = 0.05
             for i in range(n):
                 ang = 2 * np.pi * i / n
                 spd = speed * (1.0 + self._rng.uniform(-jit, jit))
                 self._spawn_one(
                     x=x, y=y, vx=spd * np.cos(ang), vy=spd * np.sin(ang),
-                    life=self._rng.uniform(1.0, 1.4),
+                    life=self._rng.uniform(1.2, 1.6),
                     hue=hue, sat=1.0, size=size_px, kind=self.K_SPARK,
                 )
         elif kind == 'crossette':
             # Big slow seeds that split into mini-bursts after ~0.6s.
             n = 8
-            speed = self._rng.uniform(4.5, 6.0) * s * size_mul
+            speed = self._rng.uniform(16.0, 22.0) * s * size_mul
             seed_life = self._rng.uniform(0.5, 0.8)
             for i in range(n):
                 ang = 2 * np.pi * i / n + self._rng.uniform(-0.04, 0.04)
@@ -1471,7 +1467,7 @@ class FireworksShow(ProceduralAnimation):
                 )
         elif kind == 'strobe':
             n = 14
-            speed = self._rng.uniform(2.5, 4.0) * s * size_mul
+            speed = self._rng.uniform(10.0, 16.0) * s * size_mul
             for i in range(n):
                 ang = 2 * np.pi * i / n + self._rng.uniform(-0.1, 0.1)
                 spd = speed * self._rng.uniform(0.7, 1.3)
@@ -1520,10 +1516,20 @@ class FireworksShow(ProceduralAnimation):
         self._next_launch_t = t_show + interval
         for _ in range(int(count)):
             kind = kinds[self._rng.integers(0, len(kinds))]
-            apex_y = self._rng.uniform(0.10, 0.45) * (self.height - 1)
-            target_x = self._rng.uniform(0.10, 0.90) * (self.width - 1)
+            # Mostly mid-height apexes; occasional very-high big shells.
+            apex_y = self._rng.uniform(0.05, 0.40) * (self.height - 1)
+            target_x = self._rng.uniform(0.20, 0.80) * (self.width - 1)
             hue = self._random_hue()
-            size_mul = self._rng.uniform(0.85, 1.25)
+            # Most shells normal-size; some big ones that cross the sky.
+            # Big-shell probability rises through the show.
+            big_prob = (0.10 if t_show < variety_start else
+                        0.20 if t_show < build_start else
+                        0.35 if t_show < finale_start else
+                        0.55)
+            if self._rng.random() < big_prob:
+                size_mul = self._rng.uniform(1.4, 1.9)
+            else:
+                size_mul = self._rng.uniform(0.8, 1.15)
             self._launch_tracer(target_x, apex_y, kind, hue, size_mul)
 
     # ---- Physics ---------------------------------------------------------
@@ -1575,9 +1581,30 @@ class FireworksShow(ProceduralAnimation):
 
     def _render(self) -> np.ndarray:
         frame = np.zeros((self.height, self.width, 3), dtype=np.float32)
+
+        # Horizon: dim warm glow on the bottom-most row(s). Acts as a
+        # "ground line" the tracers launch from. Always visible so the
+        # show has a sense of place even between bursts.
+        h_row = int(round(self.horizon_y))
+        if 0 <= h_row < self.height:
+            # Hot-orange glow that's brightest on the horizon row and
+            # falls off above it within ~1.5 LEDs.
+            band = max(1.0, self._scale * 0.04)
+            dy = self.yy - self.horizon_y
+            base = np.clip(np.exp(-(dy * dy) / (2.0 * band * band)), 0.0, 1.0)
+            # Only on/below the horizon line (don't bleed too far up).
+            base = np.where(self.yy >= self.horizon_y - band * 1.2, base, 0.0)
+            # Warm dim color: hue ~0.05 (orange), low sat for dusky feel.
+            h_field = np.full_like(base, 0.05, dtype=np.float32)
+            s_field = np.full_like(base, 0.55, dtype=np.float32)
+            v_field = (base * 0.18).astype(np.float32)  # dim
+            frame += _hsv_to_rgb_array(
+                h_field.astype(np.float32), s_field, v_field
+            ).astype(np.float32)
+
         alive = np.where(self.plife > 0.0)[0]
         if alive.size == 0:
-            return frame.astype(np.uint8)
+            return np.clip(frame, 0.0, 255.0).astype(np.uint8)
 
         for i in alive:
             x = float(self.px[i]); y = float(self.py[i])
