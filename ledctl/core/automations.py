@@ -1063,19 +1063,26 @@ class CosmicDrift(ProceduralAnimation):
         # the wisps also drift through indigo / purple / soft pink.
         self.neb_hue_base = float(rng.uniform(0.62, 0.76))
 
-        # ---- Dust: warm Gaussian blobs drifting linearly with wrap-around.
-        self.num_dust = int(num_dust)
-        self.dust_x0 = rng.uniform(0, width, self.num_dust).astype(np.float32)
-        self.dust_y0 = rng.uniform(0, height, self.num_dust).astype(np.float32)
-        # Slow drift, in pixels per second at this resolution.
+        # ---- Metaballs: orbital blobs that merge softly via inverse-square
+        # field accumulation. Far more interesting than linear drift -
+        # they smear together as their orbits cross. This is the mid-depth
+        # layer between nebula and stars.
+        self.num_balls = int(num_dust)
         speed_scale = self._scale / 80.0
-        self.dust_vx = rng.uniform(-0.6, 0.6, self.num_dust).astype(np.float32) * speed_scale
-        self.dust_vy = rng.uniform(-0.6, 0.6, self.num_dust).astype(np.float32) * speed_scale
-        self.dust_sigma = rng.uniform(0.06, 0.12, self.num_dust).astype(np.float32) * self._scale
-        # Dust hues span the pink-to-magenta-to-violet band so each blob
-        # has a different shade within the warm side of the palette.
-        self.dust_hue = rng.uniform(0.78, 0.98, self.num_dust).astype(np.float32) % 1.0
-        self.dust_amp = rng.uniform(0.30, 0.55, self.num_dust).astype(np.float32)
+        # Each ball orbits its own center with its own frequency / phase
+        # so the field never settles into a periodic-looking pattern.
+        self.ball_phase = np.linspace(0, 2 * np.pi, self.num_balls,
+                                      endpoint=False).astype(np.float32)
+        self.ball_freq_x = (1.0 + 0.3 * np.arange(self.num_balls)).astype(np.float32)
+        self.ball_freq_y = (1.3 + 0.4 * np.arange(self.num_balls)).astype(np.float32)
+        self.ball_speed = 0.5
+        # Smaller balls than the standalone metaballs animation since they
+        # share the strip with stars + nebula + pulses.
+        self.ball_radius = self._scale / 5.5
+        # Pink to violet to magenta hues, one per ball.
+        self.ball_hue = rng.uniform(0.78, 0.98, self.num_balls).astype(np.float32) % 1.0
+        # Slow hue drift so the colors evolve over time.
+        self.ball_hue_drift = rng.uniform(0.005, 0.020, self.num_balls).astype(np.float32)
 
         # ---- Stars (two depth tiers).
         self.num_far = int(num_far_stars)
@@ -1148,19 +1155,39 @@ class CosmicDrift(ProceduralAnimation):
                                  s, v_field).astype(np.float32)
 
     def _layer_dust(self, t: float) -> np.ndarray:
-        accum = np.zeros((self.height, self.width, 3), dtype=np.float32)
+        # Metaballs: each ball orbits and contributes 1/r^2 to a scalar field
+        # that, when normalized, reads as merging soft blobs. We separately
+        # accumulate per-ball-color RGB weighted by that ball's contribution
+        # so the field's color blends smoothly where balls overlap.
+        accum_field = np.zeros((self.height, self.width), dtype=np.float32)
+        accum_rgb = np.zeros((self.height, self.width, 3), dtype=np.float32)
         h_ones = np.empty_like(self.xx)
         s_field = np.full_like(self.xx, 0.85, dtype=np.float32)
-        for i in range(self.num_dust):
-            cx = (float(self.dust_x0[i]) + float(self.dust_vx[i]) * t) % self.width
-            cy = (float(self.dust_y0[i]) + float(self.dust_vy[i]) * t) % self.height
-            sig = max(1.0, float(self.dust_sigma[i]))
+        r2_const = self.ball_radius * self.ball_radius
+        for i in range(self.num_balls):
+            cx = self.width * (
+                0.5 + 0.4 * np.sin(t * self.ball_speed * float(self.ball_freq_x[i])
+                                    + float(self.ball_phase[i]))
+            )
+            cy = self.height * (
+                0.5 + 0.4 * np.cos(t * self.ball_speed * float(self.ball_freq_y[i])
+                                    + float(self.ball_phase[i]))
+            )
             d2 = (self.xx - cx) ** 2 + (self.yy - cy) ** 2
-            amp = float(self.dust_amp[i]) * np.exp(-d2 / (2.0 * sig * sig))
-            h_ones.fill(float(self.dust_hue[i]))
-            rgb = _hsv_to_rgb_array(h_ones, s_field, amp).astype(np.float32)
-            accum += rgb
-        return accum
+            contrib = r2_const / (d2 + 0.5)
+            accum_field += contrib
+            # Color contribution weighted by this ball's local field strength.
+            hue = (float(self.ball_hue[i]) + t * float(self.ball_hue_drift[i])) % 1.0
+            h_ones.fill(hue)
+            v_field = (contrib / float(self.num_balls)).astype(np.float32)
+            accum_rgb += _hsv_to_rgb_array(h_ones, s_field,
+                                           np.clip(v_field, 0.0, 1.0)).astype(np.float32)
+        # Smooth gating: tanh of the total field gives soft blob shapes.
+        # Subtract a threshold first so the field is BLACK in the spaces
+        # between balls instead of contributing a low-grade glow.
+        gated = np.maximum(0.0, np.tanh(accum_field / float(self.num_balls)) - 0.20)
+        # Renormalize and cap so metaballs don't overpower stars/pulse.
+        return accum_rgb * (gated[..., None] * 0.40)
 
     def _layer_stars(self, t: float, near: bool) -> np.ndarray:
         accum = np.zeros((self.height, self.width, 3), dtype=np.float32)
