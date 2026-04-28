@@ -1022,6 +1022,202 @@ class SupernovaBlend(ProceduralAnimation):
         return np.clip(frame, 0.0, 255.0).astype(np.uint8)
 
 
+class CosmicDrift(ProceduralAnimation):
+    """Layered cosmic scene with parallax depth.
+
+    Five composited layers, each moving at its own speed, scale, and
+    color temperature so the eye reads depth (atmospheric perspective +
+    motion parallax):
+
+      1. Deep nebula     - sum-of-sines field, slow, cool palette, dim
+      2. Mid dust        - drifting warm Gaussian blobs, moderate motion
+      3. Far stars       - faint blue-white pinpoints, slow drift, slow twinkle
+      4. Near stars      - bright pinpoints, faster drift, fast twinkle
+      5. Pulse           - occasional bright shockwave from center
+
+    Composited additively then clipped, so the bright foreground layers
+    pop above the dim background layers without washing them out.
+    """
+
+    def __init__(self, width: int, height: int, fps: float = 30,
+                 num_dust: int = 10,
+                 num_far_stars: int = 14,
+                 num_near_stars: int = 8,
+                 pulse_period: float = 11.0,
+                 seed: int = 42):
+        super().__init__(width, height, fps)
+        self._scale = float(min(width, height))
+        x = np.arange(width, dtype=np.float32)
+        y = np.arange(height, dtype=np.float32)
+        self.xx, self.yy = np.meshgrid(x, y)
+
+        rng = np.random.default_rng(seed)
+
+        # ---- Nebula: 4 plane waves at random angles + low frequencies.
+        # The result is a smooth low-contrast field that drifts slowly.
+        n_neb = 4
+        self.neb_freq = rng.uniform(0.04, 0.10, n_neb).astype(np.float32)
+        self.neb_dir = rng.uniform(0, 2 * np.pi, n_neb).astype(np.float32)
+        self.neb_speed = rng.uniform(0.05, 0.15, n_neb).astype(np.float32)
+        # Cool palette: hue in 0.55..0.80 (cyan -> indigo -> violet).
+        self.neb_hue_base = float(rng.uniform(0.58, 0.78))
+
+        # ---- Dust: warm Gaussian blobs drifting linearly with wrap-around.
+        self.num_dust = int(num_dust)
+        self.dust_x0 = rng.uniform(0, width, self.num_dust).astype(np.float32)
+        self.dust_y0 = rng.uniform(0, height, self.num_dust).astype(np.float32)
+        # Slow drift, in pixels per second at this resolution.
+        speed_scale = self._scale / 80.0
+        self.dust_vx = rng.uniform(-0.6, 0.6, self.num_dust).astype(np.float32) * speed_scale
+        self.dust_vy = rng.uniform(-0.6, 0.6, self.num_dust).astype(np.float32) * speed_scale
+        self.dust_sigma = rng.uniform(0.06, 0.12, self.num_dust).astype(np.float32) * self._scale
+        # Warm hues: amber / orange / pink, varied by particle.
+        self.dust_hue = rng.uniform(-0.04, 0.10, self.num_dust).astype(np.float32) % 1.0
+        self.dust_amp = rng.uniform(0.30, 0.55, self.num_dust).astype(np.float32)
+
+        # ---- Stars (two depth tiers).
+        self.num_far = int(num_far_stars)
+        self.num_near = int(num_near_stars)
+        # Far stars: slow drift, dim, small, pale blue tint, slow twinkle.
+        self.far_x0 = rng.uniform(0, width, self.num_far).astype(np.float32)
+        self.far_y0 = rng.uniform(0, height, self.num_far).astype(np.float32)
+        self.far_vx = rng.uniform(-0.15, 0.15, self.num_far).astype(np.float32) * speed_scale
+        self.far_vy = rng.uniform(-0.15, 0.15, self.num_far).astype(np.float32) * speed_scale
+        self.far_hue = rng.uniform(0.55, 0.70, self.num_far).astype(np.float32)
+        self.far_sat = rng.uniform(0.10, 0.30, self.num_far).astype(np.float32)
+        self.far_sigma = rng.uniform(0.012, 0.022, self.num_far).astype(np.float32) * self._scale
+        self.far_amp = rng.uniform(0.30, 0.55, self.num_far).astype(np.float32)
+        self.far_twink_phase = rng.uniform(0, 2 * np.pi, self.num_far).astype(np.float32)
+        self.far_twink_rate = rng.uniform(0.4, 1.0, self.num_far).astype(np.float32)
+
+        # Near stars: faster drift, brighter, larger, warmer/whiter, fast twinkle.
+        self.near_x0 = rng.uniform(0, width, self.num_near).astype(np.float32)
+        self.near_y0 = rng.uniform(0, height, self.num_near).astype(np.float32)
+        self.near_vx = rng.uniform(-0.6, 0.6, self.num_near).astype(np.float32) * speed_scale
+        self.near_vy = rng.uniform(-0.6, 0.6, self.num_near).astype(np.float32) * speed_scale
+        # Mostly white-yellow with a few pinks.
+        self.near_hue = rng.uniform(0.05, 0.18, self.num_near).astype(np.float32)
+        self.near_sat = rng.uniform(0.05, 0.25, self.num_near).astype(np.float32)
+        self.near_sigma = rng.uniform(0.020, 0.035, self.num_near).astype(np.float32) * self._scale
+        self.near_amp = rng.uniform(0.65, 1.00, self.num_near).astype(np.float32)
+        self.near_twink_phase = rng.uniform(0, 2 * np.pi, self.num_near).astype(np.float32)
+        self.near_twink_rate = rng.uniform(1.5, 3.5, self.num_near).astype(np.float32)
+
+        # ---- Pulse (central shockwave that fires periodically).
+        self.pulse_period = float(pulse_period)
+        # Pulse hue cycles through a few warm colors per beat.
+        self.pulse_hues = np.array([0.02, 0.10, 0.92, 0.55, 0.78], dtype=np.float32)
+
+    # ---- Layer renderers --------------------------------------------------
+
+    def _layer_nebula(self, t: float) -> np.ndarray:
+        # Build a low-contrast value field from 4 moving plane waves.
+        x = self.xx / self._scale
+        y = self.yy / self._scale
+        v = np.zeros_like(x)
+        for i in range(len(self.neb_freq)):
+            f = float(self.neb_freq[i]) * 2.0 * np.pi
+            d = float(self.neb_dir[i])
+            phase = t * float(self.neb_speed[i]) * 2.0 * np.pi
+            v = v + np.sin(f * (x * np.cos(d) + y * np.sin(d)) + phase)
+        v = v / len(self.neb_freq)  # roughly [-1, 1]
+        v = 0.5 + 0.5 * v  # [0, 1]
+        # Hue drifts slowly around the cool palette center.
+        h = (self.neb_hue_base + 0.05 * np.sin(t * 0.05)
+             + 0.04 * v) % 1.0
+        s = np.full_like(v, 0.85, dtype=np.float32)
+        # Keep nebula DIM so foreground reads above it.
+        v_field = (0.20 + 0.18 * v).astype(np.float32)
+        return _hsv_to_rgb_array(h.astype(np.float32),
+                                 s, v_field).astype(np.float32)
+
+    def _layer_dust(self, t: float) -> np.ndarray:
+        accum = np.zeros((self.height, self.width, 3), dtype=np.float32)
+        h_ones = np.empty_like(self.xx)
+        s_field = np.full_like(self.xx, 0.85, dtype=np.float32)
+        for i in range(self.num_dust):
+            cx = (float(self.dust_x0[i]) + float(self.dust_vx[i]) * t) % self.width
+            cy = (float(self.dust_y0[i]) + float(self.dust_vy[i]) * t) % self.height
+            sig = max(1.0, float(self.dust_sigma[i]))
+            d2 = (self.xx - cx) ** 2 + (self.yy - cy) ** 2
+            amp = float(self.dust_amp[i]) * np.exp(-d2 / (2.0 * sig * sig))
+            h_ones.fill(float(self.dust_hue[i]))
+            rgb = _hsv_to_rgb_array(h_ones, s_field, amp).astype(np.float32)
+            accum += rgb
+        return accum
+
+    def _layer_stars(self, t: float, near: bool) -> np.ndarray:
+        accum = np.zeros((self.height, self.width, 3), dtype=np.float32)
+        h_ones = np.empty_like(self.xx)
+        s_ones = np.empty_like(self.xx)
+        if near:
+            n = self.num_near
+            x0, y0 = self.near_x0, self.near_y0
+            vx, vy = self.near_vx, self.near_vy
+            hues, sats = self.near_hue, self.near_sat
+            sigs, amps = self.near_sigma, self.near_amp
+            tp, tr = self.near_twink_phase, self.near_twink_rate
+        else:
+            n = self.num_far
+            x0, y0 = self.far_x0, self.far_y0
+            vx, vy = self.far_vx, self.far_vy
+            hues, sats = self.far_hue, self.far_sat
+            sigs, amps = self.far_sigma, self.far_amp
+            tp, tr = self.far_twink_phase, self.far_twink_rate
+
+        for i in range(n):
+            cx = (float(x0[i]) + float(vx[i]) * t) % self.width
+            cy = (float(y0[i]) + float(vy[i]) * t) % self.height
+            sig = max(0.5, float(sigs[i]))
+            # Twinkle: brightness modulated by a sine; near stars twinkle harder.
+            base = float(amps[i])
+            twink = 0.5 + 0.5 * np.sin(t * float(tr[i]) + float(tp[i]))
+            depth_amp = base * (0.35 + 0.65 * twink) if near else base * (0.55 + 0.45 * twink)
+            d2 = (self.xx - cx) ** 2 + (self.yy - cy) ** 2
+            amp = depth_amp * np.exp(-d2 / (2.0 * sig * sig))
+            h_ones.fill(float(hues[i]))
+            s_ones.fill(float(sats[i]))
+            rgb = _hsv_to_rgb_array(h_ones, s_ones, amp).astype(np.float32)
+            accum += rgb
+        return accum
+
+    def _layer_pulse(self, t: float) -> np.ndarray:
+        # One pulse per pulse_period. Within each, a shockwave expands from
+        # the center for ~1.5 seconds, brightening then fading.
+        slot = self.pulse_period
+        idx = int(t // slot)
+        t_in = (t % slot)
+        # Pulse only in the first 1.8s of each period (rest is quiet).
+        burst_dur = 1.8
+        if t_in > burst_dur:
+            return np.zeros((self.height, self.width, 3), dtype=np.float32)
+        u = t_in / burst_dur  # 0..1
+        # Shockwave radius grows linearly; brightness fades as 1-u.
+        cx = (self.width - 1) / 2.0
+        cy = (self.height - 1) / 2.0
+        r = np.sqrt((self.xx - cx) ** 2 + (self.yy - cy) ** 2)
+        ring_r = u * (self._scale * 0.55)
+        ring_w = max(0.8, self._scale * 0.06)
+        amp = (1.0 - u) ** 2 * 1.1 * np.exp(-((r - ring_r) ** 2) / (2.0 * ring_w * ring_w))
+        # Hue cycles per pulse; saturated near-white on the leading edge.
+        hue = float(self.pulse_hues[idx % len(self.pulse_hues)])
+        h_field = np.full_like(amp, hue, dtype=np.float32)
+        s_field = np.full_like(amp, 0.45, dtype=np.float32)  # pale, near-white
+        return _hsv_to_rgb_array(h_field, s_field, amp.astype(np.float32)).astype(np.float32)
+
+    # ---- Composite --------------------------------------------------------
+
+    def generate_frame(self, time: float) -> np.ndarray:
+        nebula = self._layer_nebula(time)
+        dust = self._layer_dust(time)
+        far = self._layer_stars(time, near=False)
+        near = self._layer_stars(time, near=True)
+        pulse = self._layer_pulse(time)
+        # Additive composite (clip after).
+        frame = nebula + dust + far + near + pulse
+        return np.clip(frame, 0.0, 255.0).astype(np.uint8)
+
+
 # Registry of available automations
 AUTOMATION_REGISTRY = {
     'color_wave': ColorWave,
@@ -1040,6 +1236,7 @@ AUTOMATION_REGISTRY = {
     'dark_matter': DarkMatter,
     'supernova_sampler': SupernovaSampler,
     'supernova_blend': SupernovaBlend,
+    'cosmic_drift': CosmicDrift,
 }
 
 
