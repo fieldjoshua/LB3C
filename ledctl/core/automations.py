@@ -764,42 +764,53 @@ class SupernovaBlend(ProceduralAnimation):
         rings/spikes/spirals have hard black gaps between bright bands.
     """
 
+    # Concentric layers per nova:
+    #   core      - hard disc at center (no blur, super-concentrated)
+    #   [GAP]     - genuinely black ring between core and mid
+    #   mid       - annular Gaussian ring at mid_peak (color #2)
+    #   [GAP]     - genuinely black ring between mid and halo
+    #   halo      - annular Gaussian ring at halo_peak, shape-modulated
+    #   [black]   - corners stay black via radial cutoff
+    # Layered design: hard sharp core + soft Gaussian mid + soft Gaussian halo.
+    # Colors blend smoothly outward as a graduated radial gradient (NOT
+    # discrete planet-like rings). Shape modulator on halo is intentionally
+    # gentle so it suggests motion/structure without splitting into hard bands.
     NOVAS = [
         dict(name='crimson_shock',
-             core_hue=0.02, core_sat=1.0,  core_radius=0.030, core_amp=1.8,
-             mid_hue=0.95,  mid_sat=1.0,   mid_sigma=0.10,    mid_amp=0.95,
-             halo_hue=0.52, halo_sat=0.95, halo_sigma=0.22,   halo_amp=0.65,
-             shape='rings', shape_param=2.6, ring_sharpness=8.0,
+             core_hue=0.02, core_sat=1.0,  core_radius=0.045, core_amp=1.8,
+             mid_hue=0.95,  mid_sat=1.0,   mid_sigma=0.11,    mid_amp=0.95,
+             halo_hue=0.52, halo_sat=0.95, halo_sigma=0.24,   halo_amp=0.65,
+             shape='rings', shape_param=2.4, ring_sharpness=2.0,
              undulate_rate=0.21),
         dict(name='violet_thorn',
-             core_hue=0.78, core_sat=1.0,  core_radius=0.030, core_amp=1.8,
-             mid_hue=0.85,  mid_sat=1.0,   mid_sigma=0.10,    mid_amp=0.90,
-             halo_hue=0.30, halo_sat=1.0,  halo_sigma=0.24,   halo_amp=0.60,
-             shape='spikes', shape_param=6, ring_sharpness=6.0,
+             core_hue=0.78, core_sat=1.0,  core_radius=0.045, core_amp=1.8,
+             mid_hue=0.85,  mid_sat=1.0,   mid_sigma=0.11,    mid_amp=0.90,
+             halo_hue=0.30, halo_sat=1.0,  halo_sigma=0.26,   halo_amp=0.60,
+             shape='spikes', shape_param=6, ring_sharpness=2.0,
              undulate_rate=0.17),
         dict(name='gold_blossom',
-             core_hue=0.13, core_sat=1.0,  core_radius=0.030, core_amp=1.8,
-             mid_hue=0.06,  mid_sat=1.0,   mid_sigma=0.10,    mid_amp=0.95,
-             halo_hue=0.92, halo_sat=0.95, halo_sigma=0.24,   halo_amp=0.65,
-             shape='rings', shape_param=3.4, ring_sharpness=6.0,
+             core_hue=0.13, core_sat=1.0,  core_radius=0.045, core_amp=1.8,
+             mid_hue=0.06,  mid_sat=1.0,   mid_sigma=0.11,    mid_amp=0.95,
+             halo_hue=0.92, halo_sat=0.95, halo_sigma=0.26,   halo_amp=0.65,
+             shape='rings', shape_param=3.2, ring_sharpness=2.0,
              undulate_rate=0.27),
         dict(name='glacier_forge',
-             core_hue=0.58, core_sat=1.0,  core_radius=0.030, core_amp=1.8,
-             mid_hue=0.50,  mid_sat=1.0,   mid_sigma=0.10,    mid_amp=0.90,
-             halo_hue=0.08, halo_sat=1.0,  halo_sigma=0.22,   halo_amp=0.60,
-             shape='spiral', shape_param=1.6, ring_sharpness=4.0,
+             core_hue=0.58, core_sat=1.0,  core_radius=0.045, core_amp=1.8,
+             mid_hue=0.50,  mid_sat=1.0,   mid_sigma=0.11,    mid_amp=0.90,
+             halo_hue=0.08, halo_sat=1.0,  halo_sigma=0.24,   halo_amp=0.60,
+             shape='spiral', shape_param=1.5, ring_sharpness=1.8,
              undulate_rate=0.19),
         dict(name='toxic_rays',
-             core_hue=0.40, core_sat=1.0,  core_radius=0.030, core_amp=1.8,
-             mid_hue=0.32,  mid_sat=1.0,   mid_sigma=0.10,    mid_amp=0.95,
-             halo_hue=0.92, halo_sat=0.95, halo_sigma=0.24,   halo_amp=0.55,
-             shape='spikes', shape_param=4, ring_sharpness=8.0,
+             core_hue=0.40, core_sat=1.0,  core_radius=0.045, core_amp=1.8,
+             mid_hue=0.32,  mid_sat=1.0,   mid_sigma=0.11,    mid_amp=0.95,
+             halo_hue=0.92, halo_sat=0.95, halo_sigma=0.26,   halo_amp=0.55,
+             shape='spikes', shape_param=4, ring_sharpness=2.2,
              undulate_rate=0.23),
         dict(name='white_dwarf',
-             core_hue=0.65, core_sat=1.0,  core_radius=0.030, core_amp=1.8,
-             mid_hue=0.72,  mid_sat=1.0,   mid_sigma=0.10,    mid_amp=0.85,
-             halo_hue=0.00, halo_sat=0.0,  halo_sigma=0.24,   halo_amp=0.70,
-             shape='spiral', shape_param=2.7, ring_sharpness=5.0,
+             core_hue=0.65, core_sat=1.0,  core_radius=0.045, core_amp=1.8,
+             mid_hue=0.72,  mid_sat=1.0,   mid_sigma=0.11,    mid_amp=0.85,
+             halo_hue=0.00, halo_sat=0.0,  halo_sigma=0.26,   halo_amp=0.70,
+             shape='spiral', shape_param=2.5, ring_sharpness=1.8,
              undulate_rate=0.15),
     ]
 
@@ -848,18 +859,17 @@ class SupernovaBlend(ProceduralAnimation):
         dy = self.yy - cy - wobble_y
         r = np.sqrt(dx * dx + dy * dy)
 
-        # CORE: hard disc, 1-px linear AA at the edge so it's crisp at any
-        # supersample factor but doesn't strobe pixel-jagged at low ones.
+        # CORE: hard disc, 1-px linear AA at the edge - the only sharp layer.
         core_radius = max(0.5, nova['core_radius'] * self._scale * breath)
         core_g = np.clip(core_radius + 0.5 - r, 0.0, 1.0)
 
-        # MID: Gaussian blur, saturated.
+        # MID: centered Gaussian (blur OK) - smooth color shift outward.
         mid_sigma = max(0.7, nova['mid_sigma'] * self._scale * breath)
         mid_g = np.exp(-(r * r) / (2.0 * mid_sigma * mid_sigma))
 
-        # HALO: Gaussian blur with shape modulation. Shape uses ring_sharpness
-        # to push the modulator toward 0 or 1, giving hard black gaps
-        # between bright concentrated bands.
+        # HALO: centered Gaussian, gently shape-modulated. Sharpness is kept
+        # low so the halo reads as a soft gradient with subtle structure,
+        # not as discrete planetary-style ring bands.
         halo_sigma = max(1.2, nova['halo_sigma'] * self._scale * breath)
         halo_g = np.exp(-(r * r) / (2.0 * halo_sigma * halo_sigma))
 
@@ -881,7 +891,7 @@ class SupernovaBlend(ProceduralAnimation):
         modulator = np.clip((raw - 0.5) * sharp + 0.5, 0.0, 1.0)
         halo_g = halo_g * modulator
 
-        # Hard radial cutoff so the corners stay genuinely black.
+        # Hard radial cutoff at the halo's outer edge so corners stay black.
         max_r = halo_sigma * 2.6
         cutoff = np.clip((max_r + 1.0 - r) / 1.5, 0.0, 1.0)
         halo_g *= cutoff
