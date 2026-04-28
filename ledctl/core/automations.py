@@ -823,7 +823,7 @@ class SupernovaBlend(ProceduralAnimation):
                  hold_seconds: float = 30.0,
                  crossfade_seconds: float = 30.0,
                  flash_seconds: float = 0.45,
-                 dark_matter_count: int = 12,
+                 dark_matter_count: int = 5,
                  dark_matter_seed: int = 17):
         super().__init__(width, height, fps)
         self.hold = float(hold_seconds)
@@ -842,21 +842,22 @@ class SupernovaBlend(ProceduralAnimation):
         rng = np.random.default_rng(dark_matter_seed)
         n = max(0, int(dark_matter_count))
         self.n_dark = n
-        # Ring radii spread across the lit zones.
-        self.dark_r0 = rng.uniform(0.10, 0.42, n).astype(np.float32)
-        # Half the rings are skinny, half are blurred. Mix bimodally rather
-        # than uniformly so the difference is visually obvious.
-        skinny = rng.uniform(0.010, 0.030, n).astype(np.float32)
-        blurred = rng.uniform(0.060, 0.110, n).astype(np.float32)
+        # Ring radii spread across the lit zones, with enough spacing that
+        # the rings don't overlap themselves into a wall of black. Sample
+        # evenly with a small jitter rather than fully uniform.
+        evenly = np.linspace(0.11, 0.40, n) if n > 0 else np.zeros(n)
+        jitter = rng.uniform(-0.015, 0.015, n)
+        self.dark_r0 = (evenly + jitter).astype(np.float32)
+        # Mix of skinny and blurred rings. Skinny rings make fine dark
+        # threads; blurred rings make broad soft shadows that feather out.
+        skinny = rng.uniform(0.010, 0.025, n).astype(np.float32)
+        blurred = rng.uniform(0.045, 0.080, n).astype(np.float32)
         is_skinny = (rng.random(n) < 0.5)
         self.dark_sigma_r = np.where(is_skinny, skinny, blurred)
-        # Dimming strength per ring. Skinny rings can be sharper/darker;
-        # blurred rings are softer.
-        self.dark_strength = np.where(
-            is_skinny,
-            rng.uniform(0.50, 0.85, n),
-            rng.uniform(0.30, 0.55, n),
-        ).astype(np.float32)
+        # All rings reach pure black at their darkest (radial center of the
+        # ring). Gaussian falloff makes the dimming get lighter as you move
+        # radially away from each ring's center.
+        self.dark_strength = np.full(n, 1.0, dtype=np.float32)
         # Slow radial drift (rings expand/contract very slowly).
         self.dark_drift = rng.uniform(-0.012, 0.012, n).astype(np.float32)
 
