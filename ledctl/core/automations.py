@@ -1059,8 +1059,9 @@ class CosmicDrift(ProceduralAnimation):
         self.neb_freq = rng.uniform(0.04, 0.10, n_neb).astype(np.float32)
         self.neb_dir = rng.uniform(0, 2 * np.pi, n_neb).astype(np.float32)
         self.neb_speed = rng.uniform(0.05, 0.15, n_neb).astype(np.float32)
-        # Cool palette: hue in 0.55..0.80 (cyan -> indigo -> violet).
-        self.neb_hue_base = float(rng.uniform(0.58, 0.78))
+        # Blue->violet base; the field's value modulates hue locally so
+        # the wisps also drift through indigo / purple / soft pink.
+        self.neb_hue_base = float(rng.uniform(0.62, 0.76))
 
         # ---- Dust: warm Gaussian blobs drifting linearly with wrap-around.
         self.num_dust = int(num_dust)
@@ -1071,8 +1072,9 @@ class CosmicDrift(ProceduralAnimation):
         self.dust_vx = rng.uniform(-0.6, 0.6, self.num_dust).astype(np.float32) * speed_scale
         self.dust_vy = rng.uniform(-0.6, 0.6, self.num_dust).astype(np.float32) * speed_scale
         self.dust_sigma = rng.uniform(0.06, 0.12, self.num_dust).astype(np.float32) * self._scale
-        # Warm hues: amber / orange / pink, varied by particle.
-        self.dust_hue = rng.uniform(-0.04, 0.10, self.num_dust).astype(np.float32) % 1.0
+        # Dust hues span the pink-to-magenta-to-violet band so each blob
+        # has a different shade within the warm side of the palette.
+        self.dust_hue = rng.uniform(0.78, 0.98, self.num_dust).astype(np.float32) % 1.0
         self.dust_amp = rng.uniform(0.30, 0.55, self.num_dust).astype(np.float32)
 
         # ---- Stars (two depth tiers).
@@ -1095,9 +1097,17 @@ class CosmicDrift(ProceduralAnimation):
         self.near_y0 = rng.uniform(0, height, self.num_near).astype(np.float32)
         self.near_vx = rng.uniform(-0.6, 0.6, self.num_near).astype(np.float32) * speed_scale
         self.near_vy = rng.uniform(-0.6, 0.6, self.num_near).astype(np.float32) * speed_scale
-        # Mostly white-yellow with a few pinks.
-        self.near_hue = rng.uniform(0.05, 0.18, self.num_near).astype(np.float32)
-        self.near_sat = rng.uniform(0.05, 0.25, self.num_near).astype(np.float32)
+        # Mostly near-white with a slight pink/cyan tint - the saturation
+        # is low so they read as bright stars more than colored points,
+        # but the hue keeps them in-family with the nebula+dust palette.
+        # Half tint pink, half tint cyan - more variety within the theme.
+        tint_pink = rng.random(self.num_near) < 0.5
+        self.near_hue = np.where(
+            tint_pink,
+            rng.uniform(0.88, 0.98, self.num_near),  # pink-magenta
+            rng.uniform(0.50, 0.62, self.num_near),  # cyan-blue
+        ).astype(np.float32)
+        self.near_sat = rng.uniform(0.10, 0.30, self.num_near).astype(np.float32)
         self.near_sigma = rng.uniform(0.020, 0.035, self.num_near).astype(np.float32) * self._scale
         self.near_amp = rng.uniform(0.65, 1.00, self.num_near).astype(np.float32)
         self.near_twink_phase = rng.uniform(0, 2 * np.pi, self.num_near).astype(np.float32)
@@ -1105,8 +1115,11 @@ class CosmicDrift(ProceduralAnimation):
 
         # ---- Pulse (central shockwave that fires periodically).
         self.pulse_period = float(pulse_period)
-        # Pulse hue cycles through a few warm colors per beat.
-        self.pulse_hues = np.array([0.02, 0.10, 0.92, 0.55, 0.78], dtype=np.float32)
+        # Pulse alternates through pink/blue/violet/cyan/magenta so the
+        # periodic shockwave reads in the same palette as the rest.
+        self.pulse_hues = np.array(
+            [0.92, 0.62, 0.85, 0.55, 0.78, 0.95], dtype=np.float32
+        )
 
     # ---- Layer renderers --------------------------------------------------
 
@@ -1122,12 +1135,15 @@ class CosmicDrift(ProceduralAnimation):
             v = v + np.sin(f * (x * np.cos(d) + y * np.sin(d)) + phase)
         v = v / len(self.neb_freq)  # roughly [-1, 1]
         v = 0.5 + 0.5 * v  # [0, 1]
-        # Hue drifts slowly around the cool palette center.
-        h = (self.neb_hue_base + 0.05 * np.sin(t * 0.05)
-             + 0.04 * v) % 1.0
+        # Sparse wisps - most of strip stays black so foreground can pop.
+        v = np.clip(v - 0.55, 0.0, 1.0)
+        v = v * v
+        # Hue drifts blue -> violet -> soft pink across the wisps so the
+        # nebula doesn't read as a single flat blue. Bright wisps lean
+        # toward the pinker side; dim toward deep blue.
+        h = (self.neb_hue_base + 0.18 * v + 0.05 * np.sin(t * 0.05)) % 1.0
         s = np.full_like(v, 0.85, dtype=np.float32)
-        # Keep nebula DIM so foreground reads above it.
-        v_field = (0.20 + 0.18 * v).astype(np.float32)
+        v_field = (0.45 * v).astype(np.float32)
         return _hsv_to_rgb_array(h.astype(np.float32),
                                  s, v_field).astype(np.float32)
 
