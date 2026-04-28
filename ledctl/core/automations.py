@@ -835,21 +835,30 @@ class SupernovaBlend(ProceduralAnimation):
         self.xx, self.yy = np.meshgrid(x, y)
         self._scale = float(min(width, height))
 
-        # Dark-matter spot positions (radial / angular) and properties.
-        # Each spot is a soft Gaussian patch that DIMS the brightness in
-        # its area, breaking the perfect concentric "bullseye" look.
+        # Dark-matter "donuts": concentric Gaussian rings of darkness that
+        # dim brightness at a given radius from the nova's center. Mix of
+        # SKINNY (narrow sigma) and BLURRED (wider sigma) rings. Each ring
+        # slowly drifts radially so the pattern isn't static.
         rng = np.random.default_rng(dark_matter_seed)
         n = max(0, int(dark_matter_count))
         self.n_dark = n
-        # Place spots inside the lit zones: radius in [0.10, 0.45] of scale.
-        self.dark_r0 = rng.uniform(0.10, 0.45, n).astype(np.float32)
-        self.dark_theta0 = rng.uniform(0, 2 * np.pi, n).astype(np.float32)
-        # Blurry spots: sigma 5-12% of scale.
-        self.dark_sigma = rng.uniform(0.05, 0.12, n).astype(np.float32)
-        # Dimming strength per spot (max fraction subtracted).
-        self.dark_strength = rng.uniform(0.40, 0.80, n).astype(np.float32)
-        # Slow angular drift so the dark pockets aren't static.
-        self.dark_drift = rng.uniform(-0.08, 0.08, n).astype(np.float32)
+        # Ring radii spread across the lit zones.
+        self.dark_r0 = rng.uniform(0.10, 0.42, n).astype(np.float32)
+        # Half the rings are skinny, half are blurred. Mix bimodally rather
+        # than uniformly so the difference is visually obvious.
+        skinny = rng.uniform(0.010, 0.030, n).astype(np.float32)
+        blurred = rng.uniform(0.060, 0.110, n).astype(np.float32)
+        is_skinny = (rng.random(n) < 0.5)
+        self.dark_sigma_r = np.where(is_skinny, skinny, blurred)
+        # Dimming strength per ring. Skinny rings can be sharper/darker;
+        # blurred rings are softer.
+        self.dark_strength = np.where(
+            is_skinny,
+            rng.uniform(0.50, 0.85, n),
+            rng.uniform(0.30, 0.55, n),
+        ).astype(np.float32)
+        # Slow radial drift (rings expand/contract very slowly).
+        self.dark_drift = rng.uniform(-0.012, 0.012, n).astype(np.float32)
 
     @staticmethod
     def _hue_rgb(hue: float, sat: float) -> Tuple[float, float, float]:
@@ -955,21 +964,20 @@ class SupernovaBlend(ProceduralAnimation):
         cutoff = np.clip((max_r + 1.0 - r) / 1.5, 0.0, 1.0)
         value_field = value_field * cutoff
 
-        # Sprinkle blurred dark matter: soft Gaussian patches that dim the
-        # brightness in their area, breaking the perfect concentric look.
-        # Spots slowly drift around the nova so the dark pockets aren't
-        # static. Don't dim the core - the bright center stays clean.
+        # Concentric dark-matter donuts: each is an annular Gaussian
+        # darkness at radius ring_r with radial width sigma_r. Skinny
+        # rings read as fine dark threads; blurred rings as broad shadows.
+        # Rings drift radially over time. Core is spared from dimming.
         if self.n_dark > 0:
             dark_field = np.zeros_like(value_field)
             for i in range(self.n_dark):
-                ang = self.dark_theta0[i] + t_global * self.dark_drift[i]
-                cdx = cx + self.dark_r0[i] * scale * np.cos(ang)
-                cdy = cy + self.dark_r0[i] * scale * np.sin(ang)
-                sig = max(1.0, float(self.dark_sigma[i]) * scale)
-                d2 = (self.xx - cdx) ** 2 + (self.yy - cdy) ** 2
-                spot = float(self.dark_strength[i]) * np.exp(-d2 / (2.0 * sig * sig))
+                ring_r = (float(self.dark_r0[i])
+                          + t_global * float(self.dark_drift[i])) * scale
+                sigma_r = max(0.5, float(self.dark_sigma_r[i]) * scale)
+                spot = float(self.dark_strength[i]) * np.exp(
+                    -((r - ring_r) ** 2) / (2.0 * sigma_r * sigma_r)
+                )
                 np.maximum(dark_field, spot, out=dark_field)
-            # Spare the core from dimming.
             dark_field = dark_field * (1.0 - core_disc)
             value_field = value_field * (1.0 - dark_field)
 
