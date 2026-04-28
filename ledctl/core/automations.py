@@ -780,37 +780,37 @@ class SupernovaBlend(ProceduralAnimation):
              core_hue=0.02, core_sat=1.0,  core_radius=0.045, core_amp=1.8,
              mid_hue=0.95,  mid_sat=1.0,   mid_sigma=0.11,    mid_amp=0.95,
              halo_hue=0.52, halo_sat=0.95, halo_sigma=0.24,   halo_amp=0.65,
-             shape='rings', shape_param=2.4, ring_sharpness=2.0,
+             shape='rings', shape_param=2.4, modulation_depth=0.30,
              undulate_rate=0.21),
         dict(name='violet_thorn',
              core_hue=0.78, core_sat=1.0,  core_radius=0.045, core_amp=1.8,
              mid_hue=0.85,  mid_sat=1.0,   mid_sigma=0.11,    mid_amp=0.90,
              halo_hue=0.30, halo_sat=1.0,  halo_sigma=0.26,   halo_amp=0.60,
-             shape='spikes', shape_param=6, ring_sharpness=2.0,
+             shape='spikes', shape_param=6, modulation_depth=0.25,
              undulate_rate=0.17),
         dict(name='gold_blossom',
              core_hue=0.13, core_sat=1.0,  core_radius=0.045, core_amp=1.8,
              mid_hue=0.06,  mid_sat=1.0,   mid_sigma=0.11,    mid_amp=0.95,
              halo_hue=0.92, halo_sat=0.95, halo_sigma=0.26,   halo_amp=0.65,
-             shape='rings', shape_param=3.2, ring_sharpness=2.0,
+             shape='rings', shape_param=3.2, modulation_depth=0.30,
              undulate_rate=0.27),
         dict(name='glacier_forge',
              core_hue=0.58, core_sat=1.0,  core_radius=0.045, core_amp=1.8,
              mid_hue=0.50,  mid_sat=1.0,   mid_sigma=0.11,    mid_amp=0.90,
              halo_hue=0.08, halo_sat=1.0,  halo_sigma=0.24,   halo_amp=0.60,
-             shape='spiral', shape_param=1.5, ring_sharpness=1.8,
+             shape='spiral', shape_param=1.5, modulation_depth=0.25,
              undulate_rate=0.19),
         dict(name='toxic_rays',
              core_hue=0.40, core_sat=1.0,  core_radius=0.045, core_amp=1.8,
              mid_hue=0.32,  mid_sat=1.0,   mid_sigma=0.11,    mid_amp=0.95,
              halo_hue=0.92, halo_sat=0.95, halo_sigma=0.26,   halo_amp=0.55,
-             shape='spikes', shape_param=4, ring_sharpness=2.2,
+             shape='spikes', shape_param=4, modulation_depth=0.30,
              undulate_rate=0.23),
         dict(name='white_dwarf',
              core_hue=0.65, core_sat=1.0,  core_radius=0.045, core_amp=1.8,
              mid_hue=0.72,  mid_sat=1.0,   mid_sigma=0.11,    mid_amp=0.85,
              halo_hue=0.00, halo_sat=0.0,  halo_sigma=0.26,   halo_amp=0.70,
-             shape='spiral', shape_param=2.5, ring_sharpness=1.8,
+             shape='spiral', shape_param=2.5, modulation_depth=0.25,
              undulate_rate=0.15),
     ]
 
@@ -873,9 +873,26 @@ class SupernovaBlend(ProceduralAnimation):
         halo_sigma = max(1.2, nova['halo_sigma'] * self._scale * breath)
         halo_g = np.exp(-(r * r) / (2.0 * halo_sigma * halo_sigma))
 
-        # No angular / radial shape modulators - they cut through the layers
-        # and break the "concentric graduated gradient" look. Halo stays
-        # purely radial. Different novas read distinctly via color anyway.
+        # Soft shape modulator on the halo: rings/spikes/spirals add motion
+        # and structure but are clamped to [floor, 1.0] so they vary
+        # brightness rather than cutting holes. depth controls how much
+        # variation; floor=1-depth keeps the halo continuous.
+        depth = float(nova.get('modulation_depth', 0.30))
+        shape = nova['shape']
+        if shape == 'rings':
+            raw = 0.5 + 0.5 * np.sin(r * nova['shape_param'] - t_global * 0.6)
+        elif shape == 'spikes':
+            theta = np.arctan2(dy, dx)
+            n = int(nova['shape_param'])
+            raw = 0.5 + 0.5 * np.cos(n * theta + t_global * 0.25)
+        elif shape == 'spiral':
+            theta = np.arctan2(dy, dx)
+            raw = 0.5 + 0.5 * np.sin(theta * 2.0 + r * nova['shape_param']
+                                     - t_global * 0.4)
+        else:
+            raw = np.ones_like(halo_g)
+        modulator = (1.0 - depth) + depth * raw  # in [1-depth, 1]
+        halo_g = halo_g * modulator
 
         # Hard radial cutoff at the halo's outer edge so corners stay black.
         max_r = halo_sigma * 2.6
