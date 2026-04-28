@@ -112,12 +112,12 @@ def main() -> int:
                     help="render animation at N*width by N*height internally "
                          "and average down. Smooth gradients on a coarse "
                          "strip. 1=off (default), 4 is a good starting point.")
-    ap.add_argument("--center-native", type=int, default=0, metavar="K",
+    ap.add_argument("--center-native", type=int, default=2, metavar="K",
                     help="when supersampling, render the middle KxK LEDs "
                          "from a NATIVE-resolution pass instead of the "
                          "block-averaged supersampled pass. Keeps a bright "
                          "concentrated core from being diluted by averaging. "
-                         "0=off (default), 2 = middle 2x2 LEDs.")
+                         "0=off, 2=middle 2x2 LEDs (default).")
     ap.add_argument("--fade", type=float, default=0.0, metavar="F",
                     help="persistence / trail effect. 0=off (default), "
                          "0.85 nice trails, 0.95 long trails, 1.0 never fades. "
