@@ -775,46 +775,48 @@ class SupernovaBlend(ProceduralAnimation):
     # Colors blend smoothly outward as a graduated radial gradient (NOT
     # discrete planet-like rings). Shape modulator on halo is intentionally
     # gentle so it suggests motion/structure without splitting into hard bands.
-    # Each pixel is rendered with ONE hue, lerped from core_hue at r=0 ->
-    #   mid_hue at r=mid_at -> halo_hue at r=halo_at. So the core's color
-    #   is NOT washed out by mid/halo summing on top of it.
-    # Brightness is a single radial envelope: hard-disc core + Gaussian halo.
+    # Three discrete hues per nova - core / mid / halo, no smooth lerp -
+    #   so each pixel is exactly one of the three (boundary pixels can blend
+    #   slightly due to supersample averaging, but the bulk of each ring
+    #   reads as a single pure hue).
+    # Radii shrunk 50% from earlier draft so the supernova sits in a
+    #   generous black field and corners/edges stay genuinely dark.
     NOVAS = [
         dict(name='crimson_shock',
              core_hue=0.02, mid_hue=0.95, halo_hue=0.52,
-             core_radius=0.10, mid_at=0.22, halo_at=0.42,
-             envelope_sigma=0.22, sat=1.0,
-             shape='rings', shape_param=2.4, modulation_depth=0.35,
+             core_radius=0.07, mid_at=0.13, halo_at=0.22,
+             envelope_sigma=0.13, sat=1.0,
+             shape='rings', shape_param=4.0, modulation_depth=0.30,
              undulate_rate=0.21),
         dict(name='violet_thorn',
              core_hue=0.78, mid_hue=0.85, halo_hue=0.30,
-             core_radius=0.10, mid_at=0.22, halo_at=0.44,
-             envelope_sigma=0.24, sat=1.0,
-             shape='spikes', shape_param=6, modulation_depth=0.30,
+             core_radius=0.07, mid_at=0.13, halo_at=0.23,
+             envelope_sigma=0.14, sat=1.0,
+             shape='spikes', shape_param=6, modulation_depth=0.25,
              undulate_rate=0.17),
         dict(name='gold_blossom',
              core_hue=0.13, mid_hue=0.06, halo_hue=0.92,
-             core_radius=0.10, mid_at=0.22, halo_at=0.44,
-             envelope_sigma=0.24, sat=1.0,
-             shape='rings', shape_param=3.2, modulation_depth=0.35,
+             core_radius=0.07, mid_at=0.13, halo_at=0.23,
+             envelope_sigma=0.14, sat=1.0,
+             shape='rings', shape_param=5.0, modulation_depth=0.30,
              undulate_rate=0.27),
         dict(name='glacier_forge',
              core_hue=0.58, mid_hue=0.50, halo_hue=0.08,
-             core_radius=0.10, mid_at=0.22, halo_at=0.42,
-             envelope_sigma=0.22, sat=1.0,
-             shape='spiral', shape_param=1.5, modulation_depth=0.30,
+             core_radius=0.07, mid_at=0.13, halo_at=0.22,
+             envelope_sigma=0.13, sat=1.0,
+             shape='spiral', shape_param=2.5, modulation_depth=0.25,
              undulate_rate=0.19),
         dict(name='toxic_rays',
              core_hue=0.40, mid_hue=0.32, halo_hue=0.92,
-             core_radius=0.10, mid_at=0.22, halo_at=0.44,
-             envelope_sigma=0.24, sat=1.0,
-             shape='spikes', shape_param=4, modulation_depth=0.35,
+             core_radius=0.07, mid_at=0.13, halo_at=0.23,
+             envelope_sigma=0.14, sat=1.0,
+             shape='spikes', shape_param=4, modulation_depth=0.30,
              undulate_rate=0.23),
         dict(name='white_dwarf',
              core_hue=0.65, mid_hue=0.72, halo_hue=0.00, halo_sat=0.0,
-             core_radius=0.10, mid_at=0.22, halo_at=0.44,
-             envelope_sigma=0.24, sat=1.0,
-             shape='spiral', shape_param=2.5, modulation_depth=0.30,
+             core_radius=0.07, mid_at=0.13, halo_at=0.23,
+             envelope_sigma=0.14, sat=1.0,
+             shape='spiral', shape_param=4.0, modulation_depth=0.25,
              undulate_rate=0.15),
     ]
 
@@ -883,26 +885,22 @@ class SupernovaBlend(ProceduralAnimation):
         halo_r = nova['halo_at'] * scale
         env_sigma = max(1.2, nova['envelope_sigma'] * scale)
 
-        # HUE FIELD: one hue per pixel, lerped through the three keypoints.
+        # HUE FIELD: hard 3-way split. Boundaries are at the midpoints
+        # between the core/mid and mid/halo radii. Each pixel ends up
+        # with EXACTLY ONE of {core_hue, mid_hue, halo_hue}.
         ch = float(nova['core_hue'])
         mh = float(nova['mid_hue'])
         hh = float(nova['halo_hue'])
-        # t1: 0 at r=core_r -> 1 at r=mid_r (saturates outside).
-        t1 = np.clip((r - core_r) / max(0.5, mid_r - core_r), 0.0, 1.0)
-        # t2: 0 at r=mid_r -> 1 at r=halo_r.
-        t2 = np.clip((r - mid_r) / max(0.5, halo_r - mid_r), 0.0, 1.0)
-        # First lerp core->mid; second lerp those toward halo by t2.
-        h_inner = self._lerp_hue(ch, mh, t1)  # core hue out to mid_r, mid_hue past
-        # h_inner is np.ndarray; lerp again toward halo using same helper:
-        diff = ((hh - h_inner) % 1.0)
-        diff = np.where(diff > 0.5, diff - 1.0, diff)
-        hue_field = (h_inner + diff * t2) % 1.0
+        b_cm = (core_r + mid_r) / 2.0
+        b_mh = (mid_r + halo_r) / 2.0
+        hue_field = np.where(r < b_cm, ch,
+                     np.where(r < b_mh, mh, hh)).astype(np.float32)
 
-        # Saturation field: high in the colored regions, drops toward the
-        # last layer's halo_sat (so e.g. white_dwarf can fade to white).
-        sat_inner = float(nova.get('sat', 1.0))
-        sat_halo = float(nova.get('halo_sat', sat_inner))
-        sat_field = sat_inner + (sat_halo - sat_inner) * t2
+        # Saturation field: per-zone too. Halo_sat lets e.g. white_dwarf's
+        # outer ring desaturate to white.
+        sat_core = float(nova.get('sat', 1.0))
+        sat_halo = float(nova.get('halo_sat', sat_core))
+        sat_field = np.where(r < b_mh, sat_core, sat_halo).astype(np.float32)
 
         # BRIGHTNESS ENVELOPE: hard-disc core at full 1.0 + soft Gaussian
         # halo capped at 0.75. The cap keeps the halo from flat-lighting
@@ -932,8 +930,10 @@ class SupernovaBlend(ProceduralAnimation):
         modulator = np.where(core_disc > 0.5, 1.0, modulator)
         value_field = value_field * modulator
 
-        # Hard radial cutoff so corners stay black.
-        max_r = env_sigma * 2.6
+        # Hard radial cutoff so corners stay black. Tightened to halo_r * 1.15
+        # so the bright field stops not far past the outer hue ring; that
+        # gives a generous black margin around the supernova.
+        max_r = halo_r * 1.15
         cutoff = np.clip((max_r + 1.0 - r) / 1.5, 0.0, 1.0)
         value_field = value_field * cutoff
 
