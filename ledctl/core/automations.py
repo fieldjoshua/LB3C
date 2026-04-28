@@ -873,23 +873,9 @@ class SupernovaBlend(ProceduralAnimation):
         halo_sigma = max(1.2, nova['halo_sigma'] * self._scale * breath)
         halo_g = np.exp(-(r * r) / (2.0 * halo_sigma * halo_sigma))
 
-        sharp = float(nova.get('ring_sharpness', 1.0))
-        shape = nova['shape']
-        if shape == 'rings':
-            raw = 0.5 + 0.5 * np.sin(r * nova['shape_param'] - t_global * 0.6)
-        elif shape == 'spikes':
-            theta = np.arctan2(dy, dx)
-            n = int(nova['shape_param'])
-            raw = 0.5 + 0.5 * np.cos(n * theta + t_global * 0.25)
-        elif shape == 'spiral':
-            theta = np.arctan2(dy, dx)
-            raw = 0.5 + 0.5 * np.sin(theta * 2.0 + r * nova['shape_param'] - t_global * 0.4)
-        else:
-            raw = np.ones_like(halo_g)
-        # Sharpen: amplify around 0.5, clip to [0,1]. sharp=1 leaves it alone;
-        # sharp=8 produces nearly square-wave bands with black gaps.
-        modulator = np.clip((raw - 0.5) * sharp + 0.5, 0.0, 1.0)
-        halo_g = halo_g * modulator
+        # No angular / radial shape modulators - they cut through the layers
+        # and break the "concentric graduated gradient" look. Halo stays
+        # purely radial. Different novas read distinctly via color anyway.
 
         # Hard radial cutoff at the halo's outer edge so corners stay black.
         max_r = halo_sigma * 2.6

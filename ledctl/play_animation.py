@@ -112,6 +112,12 @@ def main() -> int:
                     help="render animation at N*width by N*height internally "
                          "and average down. Smooth gradients on a coarse "
                          "strip. 1=off (default), 4 is a good starting point.")
+    ap.add_argument("--center-native", type=int, default=0, metavar="K",
+                    help="when supersampling, render the middle KxK LEDs "
+                         "from a NATIVE-resolution pass instead of the "
+                         "block-averaged supersampled pass. Keeps a bright "
+                         "concentrated core from being diluted by averaging. "
+                         "0=off (default), 2 = middle 2x2 LEDs.")
     ap.add_argument("--fade", type=float, default=0.0, metavar="F",
                     help="persistence / trail effect. 0=off (default), "
                          "0.85 nice trails, 0.95 long trails, 1.0 never fades. "
@@ -143,6 +149,15 @@ def main() -> int:
     ss = max(1, int(args.supersample))
     inner_w, inner_h = args.width * ss, args.height * ss
     anim = cls(inner_w, inner_h, fps=args.fps)
+    # Optional second instance at native resolution for the middle KxK LEDs.
+    center_k = max(0, int(args.center_native))
+    if center_k > 0 and ss > 1:
+        anim_native = cls(args.width, args.height, fps=args.fps)
+        cx_lo = max(0, (args.width - center_k) // 2)
+        cy_lo = max(0, (args.height - center_k) // 2)
+    else:
+        anim_native = None
+        cx_lo = cy_lo = 0
 
     count = args.count if args.count is not None else args.width * args.height
     dev = ArduinoSerialDevice({
@@ -198,6 +213,17 @@ def main() -> int:
                     .mean(axis=(1, 3))
                     .astype(np.uint8)
                 )
+                # Optionally overwrite the center KxK with a native render
+                # so a sharp bright core doesn't get washed out by averaging.
+                if anim_native is not None:
+                    nf = anim_native.generate_frame(anim_t)
+                    if nf.dtype != np.uint8:
+                        nf = np.clip(nf, 0, 255).astype(np.uint8)
+                    np_frame[cy_lo:cy_lo + center_k,
+                             cx_lo:cx_lo + center_k] = (
+                        nf[cy_lo:cy_lo + center_k,
+                           cx_lo:cx_lo + center_k]
+                    )
             if persist is not None:
                 # Decay the persistence buffer; take per-channel max with the
                 # new frame so bright moving features leave fading trails
