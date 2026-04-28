@@ -1261,6 +1261,415 @@ class CosmicDrift(ProceduralAnimation):
         return np.clip(frame, 0.0, 255.0).astype(np.uint8)
 
 
+class FireworksShow(ProceduralAnimation):
+    """A complete fireworks show on a black sky.
+
+    Tracers ascend from a horizon at the bottom, decelerate to an apex,
+    and burst into one of several effect types. The show progresses
+    through four phases over a configurable duration:
+
+        slow start  - sparse single bursts, simple peonies
+        variety     - all effect types, occasional doubles
+        build       - faster cadence, multi-break shells common
+        FINALE      - rapid fire, stacked, the works
+
+    Then loops. Particle physics is fully vectorized; one numpy update
+    per frame drives every particle's position, velocity and life.
+
+    Effect types implemented:
+        peony          - clean radial sparks, single color
+        chrysanthemum  - radial sparks with longer life and trails
+        willow         - heavy gravity, drooping streamers
+        ring           - particles fired in a ring
+        crossette      - sparks that split into mini-bursts mid-flight
+        strobe         - rapid bright flashes from a center point
+    """
+
+    MAX_PARTICLES = 600
+
+    # Particle 'kind' codes.
+    K_TRACER = 0
+    K_SPARK = 1        # standard burst spark
+    K_HEAVY = 2        # willow - higher gravity, slower
+    K_CROSS_SEED = 3   # crossette parent - splits when life expires
+    K_STROBE = 4       # strobe spark - flashes via life modulation
+
+    def __init__(self, width: int, height: int, fps: float = 30,
+                 show_duration: float = 60.0,
+                 horizon_y: float = 0.92,
+                 seed: int = 7):
+        super().__init__(width, height, fps)
+        self._scale = float(min(width, height))
+        x = np.arange(width, dtype=np.float32)
+        y = np.arange(height, dtype=np.float32)
+        self.xx, self.yy = np.meshgrid(x, y)
+
+        self.show_duration = float(show_duration)
+        self.horizon_y = float(horizon_y) * (self.height - 1)
+        self._rng = np.random.default_rng(seed)
+
+        # Gravity in pixels/sec^2 at this resolution. Tracers get a fraction
+        # of this so they slow naturally to an apex; willows get more.
+        self.g = 18.0 * self._scale / 80.0
+
+        # Pre-allocated particle arrays (Structure-of-Arrays for speed).
+        N = self.MAX_PARTICLES
+        self.px = np.zeros(N, dtype=np.float32)
+        self.py = np.zeros(N, dtype=np.float32)
+        self.pvx = np.zeros(N, dtype=np.float32)
+        self.pvy = np.zeros(N, dtype=np.float32)
+        self.plife = np.zeros(N, dtype=np.float32)        # remaining (s)
+        self.pmaxlife = np.ones(N, dtype=np.float32)
+        self.phue = np.zeros(N, dtype=np.float32)
+        self.psat = np.ones(N, dtype=np.float32)
+        self.psize = np.zeros(N, dtype=np.float32)        # render sigma (px)
+        self.pkind = np.zeros(N, dtype=np.int32)
+        self.pgravity = np.zeros(N, dtype=np.float32)     # per-particle g mul
+
+        # Per-tracer 'what to spawn when I expire' info.
+        self.p_burst_kind = np.zeros(N, dtype='U16')
+        self.p_burst_hue = np.zeros(N, dtype=np.float32)
+        self.p_burst_size = np.zeros(N, dtype=np.float32)
+
+        self._last_t = 0.0
+        self._next_launch_t = 0.6
+        self._show_t0 = 0.0
+
+        # Hue palette for fireworks: bright saturated set.
+        self._palette = np.array(
+            [0.00, 0.06, 0.13, 0.30, 0.45, 0.55, 0.62, 0.78, 0.85, 0.92],
+            dtype=np.float32,
+        )
+
+    # ---- Slot management -------------------------------------------------
+
+    def _free_slots(self, n: int) -> np.ndarray:
+        free = np.where(self.plife <= 0.0)[0]
+        return free[:n]
+
+    def _spawn_one(self, x, y, vx, vy, life, hue, sat, size, kind,
+                   gmul=1.0, burst_kind='', burst_hue=0.0, burst_size=0.0):
+        slot = self._free_slots(1)
+        if len(slot) == 0:
+            return
+        i = int(slot[0])
+        self.px[i] = x;    self.py[i] = y
+        self.pvx[i] = vx;  self.pvy[i] = vy
+        self.plife[i] = life
+        self.pmaxlife[i] = life
+        self.phue[i] = hue
+        self.psat[i] = sat
+        self.psize[i] = size
+        self.pkind[i] = kind
+        self.pgravity[i] = gmul
+        self.p_burst_kind[i] = burst_kind
+        self.p_burst_hue[i] = burst_hue
+        self.p_burst_size[i] = burst_size
+
+    # ---- Spawning helpers -----------------------------------------------
+
+    def _launch_tracer(self, target_x: float, apex_y: float,
+                       burst_kind: str, burst_hue: float, burst_size: float):
+        """Send a tracer up that bursts at apex_y."""
+        ascent = self._rng.uniform(0.9, 1.3)
+        # Vertical: start at horizon, decelerate so vy=0 at apex_y. With
+        # gravity g, time to reach apex from initial vy0 is t_apex = -vy0/g
+        # and dy = vy0 * t_apex + 0.5 * g * t_apex^2 = -vy0^2 / (2g).
+        # So vy0 = -sqrt(2 * g * (horizon - apex)). Negative = upward.
+        dy = self.horizon_y - apex_y
+        vy0 = -np.sqrt(max(0.5, 2.0 * self.g * dy))
+        # Horizontal: simple constant velocity to drift to target_x.
+        x0 = self.horizon_y * 0 + self._rng.uniform(0.05, 0.95) * (self.width - 1)
+        # Anchor x near target so the trail goes mostly straight up.
+        x0 = target_x + self._rng.uniform(-0.05, 0.05) * self.width
+        # Time to reach apex (when vy = 0):
+        t_apex = -vy0 / self.g
+        vx0 = (target_x - x0) / max(0.2, t_apex)
+        # Tracer color: warm gold/white. Burst color stored separately.
+        tracer_size = max(0.5, self._scale * 0.05)
+        self._spawn_one(
+            x=x0, y=self.horizon_y, vx=vx0, vy=vy0, life=t_apex,
+            hue=0.13, sat=0.30, size=tracer_size,
+            kind=self.K_TRACER, gmul=1.0,
+            burst_kind=burst_kind, burst_hue=burst_hue, burst_size=burst_size,
+        )
+
+    def _spawn_burst(self, x: float, y: float, kind: str, hue: float,
+                     size_mul: float = 1.0):
+        """Spawn the spark cloud for a given burst type at (x, y)."""
+        s = self._scale / 80.0
+        # Particle render sigma. Tuned so a single spark covers about half
+        # an LED at the output resolution after supersample averaging.
+        size_px = max(0.5, self._scale * 0.045)
+
+        if kind == 'peony':
+            n = 24
+            speed = self._rng.uniform(5.0, 7.5) * s * size_mul
+            for i in range(n):
+                ang = (2 * np.pi * i / n) + self._rng.uniform(-0.07, 0.07)
+                spd = speed * self._rng.uniform(0.85, 1.15)
+                self._spawn_one(
+                    x=x, y=y, vx=spd * np.cos(ang), vy=spd * np.sin(ang),
+                    life=self._rng.uniform(1.0, 1.5),
+                    hue=(hue + self._rng.uniform(-0.02, 0.02)) % 1.0,
+                    sat=1.0, size=size_px, kind=self.K_SPARK,
+                )
+        elif kind == 'chrysanthemum':
+            n = 30
+            speed = self._rng.uniform(4.5, 7.0) * s * size_mul
+            for i in range(n):
+                ang = (2 * np.pi * i / n) + self._rng.uniform(-0.05, 0.05)
+                spd = speed * self._rng.uniform(0.7, 1.3)
+                self._spawn_one(
+                    x=x, y=y, vx=spd * np.cos(ang), vy=spd * np.sin(ang),
+                    life=self._rng.uniform(1.6, 2.4),
+                    hue=(hue + self._rng.uniform(-0.04, 0.04)) % 1.0,
+                    sat=1.0, size=size_px, kind=self.K_SPARK,
+                )
+        elif kind == 'willow':
+            n = 22
+            speed = self._rng.uniform(3.5, 5.5) * s * size_mul
+            for i in range(n):
+                ang = (2 * np.pi * i / n) + self._rng.uniform(-0.06, 0.06)
+                # Bias velocity slightly upward so droops feel right.
+                spd = speed * self._rng.uniform(0.7, 1.2)
+                self._spawn_one(
+                    x=x, y=y,
+                    vx=spd * np.cos(ang) * 0.7,
+                    vy=spd * np.sin(ang) - 1.0 * s,
+                    life=self._rng.uniform(2.2, 3.2),
+                    hue=(hue + self._rng.uniform(-0.02, 0.02)) % 1.0,
+                    sat=0.8, size=size_px,
+                    kind=self.K_HEAVY, gmul=1.6,
+                )
+        elif kind == 'ring':
+            n = 28
+            speed = self._rng.uniform(5.5, 7.0) * s * size_mul
+            jit = 0.05
+            for i in range(n):
+                ang = 2 * np.pi * i / n
+                spd = speed * (1.0 + self._rng.uniform(-jit, jit))
+                self._spawn_one(
+                    x=x, y=y, vx=spd * np.cos(ang), vy=spd * np.sin(ang),
+                    life=self._rng.uniform(1.0, 1.4),
+                    hue=hue, sat=1.0, size=size_px, kind=self.K_SPARK,
+                )
+        elif kind == 'crossette':
+            # Big slow seeds that split into mini-bursts after ~0.6s.
+            n = 8
+            speed = self._rng.uniform(4.5, 6.0) * s * size_mul
+            seed_life = self._rng.uniform(0.5, 0.8)
+            for i in range(n):
+                ang = 2 * np.pi * i / n + self._rng.uniform(-0.04, 0.04)
+                spd = speed * self._rng.uniform(0.9, 1.1)
+                self._spawn_one(
+                    x=x, y=y, vx=spd * np.cos(ang), vy=spd * np.sin(ang),
+                    life=seed_life,
+                    hue=hue, sat=1.0, size=size_px * 1.2,
+                    kind=self.K_CROSS_SEED, gmul=0.6,
+                    burst_kind='peony', burst_hue=hue, burst_size=0.5,
+                )
+        elif kind == 'strobe':
+            n = 14
+            speed = self._rng.uniform(2.5, 4.0) * s * size_mul
+            for i in range(n):
+                ang = 2 * np.pi * i / n + self._rng.uniform(-0.1, 0.1)
+                spd = speed * self._rng.uniform(0.7, 1.3)
+                self._spawn_one(
+                    x=x, y=y, vx=spd * np.cos(ang), vy=spd * np.sin(ang),
+                    life=self._rng.uniform(1.4, 2.0),
+                    hue=hue, sat=0.05, size=size_px,
+                    kind=self.K_STROBE, gmul=0.9,
+                )
+
+    def _random_hue(self) -> float:
+        return float(self._palette[self._rng.integers(0, len(self._palette))])
+
+    # ---- Show timeline ---------------------------------------------------
+
+    def _spawn_for_time(self, t_show: float):
+        """Time-based launching. t_show is seconds since show start."""
+        if t_show < self._next_launch_t:
+            return
+        # Phase boundaries.
+        D = self.show_duration
+        finale_start = D * 0.85
+        build_start = D * 0.6
+        variety_start = D * 0.25
+
+        if t_show >= finale_start:
+            # FINALE: rapid fire, big multi-break combos.
+            interval = self._rng.uniform(0.18, 0.40)
+            count = self._rng.integers(1, 4)
+            kinds = ['peony', 'chrysanthemum', 'willow', 'ring',
+                     'crossette', 'strobe']
+        elif t_show >= build_start:
+            interval = self._rng.uniform(0.7, 1.2)
+            count = self._rng.integers(1, 3)
+            kinds = ['peony', 'chrysanthemum', 'willow', 'ring',
+                     'crossette', 'strobe']
+        elif t_show >= variety_start:
+            interval = self._rng.uniform(1.4, 2.2)
+            count = 1 if self._rng.random() < 0.7 else 2
+            kinds = ['peony', 'chrysanthemum', 'willow', 'ring', 'strobe']
+        else:
+            interval = self._rng.uniform(2.4, 3.5)
+            count = 1
+            kinds = ['peony', 'chrysanthemum']
+
+        self._next_launch_t = t_show + interval
+        for _ in range(int(count)):
+            kind = kinds[self._rng.integers(0, len(kinds))]
+            apex_y = self._rng.uniform(0.10, 0.45) * (self.height - 1)
+            target_x = self._rng.uniform(0.10, 0.90) * (self.width - 1)
+            hue = self._random_hue()
+            size_mul = self._rng.uniform(0.85, 1.25)
+            self._launch_tracer(target_x, apex_y, kind, hue, size_mul)
+
+    # ---- Physics ---------------------------------------------------------
+
+    def _update(self, dt: float):
+        if dt <= 0:
+            return
+        alive = self.plife > 0.0
+        # Move.
+        self.px[alive] += self.pvx[alive] * dt
+        self.py[alive] += self.pvy[alive] * dt
+        # Gravity (per-particle multiplier so willows sag).
+        self.pvy[alive] += self.g * self.pgravity[alive] * dt
+        # Mild air drag for sparks so they don't streak forever.
+        drag = 0.92 ** dt if dt < 1.0 else 0.5
+        self.pvx[alive] *= drag
+        # Life.
+        prev_life = self.plife.copy()
+        self.plife[alive] -= dt
+
+        # Tracers that just expired -> trigger their burst at current pos.
+        just_died_tracers = (
+            (prev_life > 0.0) & (self.plife <= 0.0) & (self.pkind == self.K_TRACER)
+        )
+        if np.any(just_died_tracers):
+            for idx in np.where(just_died_tracers)[0]:
+                self._spawn_burst(
+                    float(self.px[idx]), float(self.py[idx]),
+                    str(self.p_burst_kind[idx]),
+                    float(self.p_burst_hue[idx]),
+                    float(self.p_burst_size[idx]),
+                )
+
+        # Crossette seeds that just expired -> mini-burst at current pos.
+        just_died_seeds = (
+            (prev_life > 0.0) & (self.plife <= 0.0) & (self.pkind == self.K_CROSS_SEED)
+        )
+        if np.any(just_died_seeds):
+            for idx in np.where(just_died_seeds)[0]:
+                # Smaller secondary burst.
+                self._spawn_burst(
+                    float(self.px[idx]), float(self.py[idx]),
+                    str(self.p_burst_kind[idx]) or 'peony',
+                    float(self.p_burst_hue[idx]),
+                    0.4,
+                )
+
+    # ---- Rendering -------------------------------------------------------
+
+    def _render(self) -> np.ndarray:
+        frame = np.zeros((self.height, self.width, 3), dtype=np.float32)
+        alive = np.where(self.plife > 0.0)[0]
+        if alive.size == 0:
+            return frame.astype(np.uint8)
+
+        for i in alive:
+            x = float(self.px[i]); y = float(self.py[i])
+            if x < -3 or x > self.width + 3 or y < -3 or y > self.height + 3:
+                continue
+            sigma = max(0.6, float(self.psize[i]))
+            kind = int(self.pkind[i])
+            life_frac = float(self.plife[i] / max(0.001, self.pmaxlife[i]))
+            # Brightness profile per kind:
+            if kind == self.K_TRACER:
+                # Bright nearly constant; slight fade near apex.
+                amp = 0.85 + 0.15 * (1.0 - life_frac)
+                hue = float(self.phue[i])
+                sat = float(self.psat[i])
+            elif kind == self.K_SPARK:
+                # Quick bright flash, fades to dim ember.
+                amp = life_frac * (0.7 + 0.3 * (1.0 - life_frac))
+                hue = float(self.phue[i])
+                sat = float(self.psat[i])
+            elif kind == self.K_HEAVY:
+                # Willow: stays warm, fades slowly to amber.
+                amp = life_frac * 0.85
+                hue = (float(self.phue[i]) + 0.05 * (1.0 - life_frac)) % 1.0
+                sat = float(self.psat[i])
+            elif kind == self.K_CROSS_SEED:
+                amp = 0.9
+                hue = float(self.phue[i])
+                sat = 1.0
+            elif kind == self.K_STROBE:
+                # Rapid on/off flicker via fast sine on remaining life.
+                flicker = 0.5 + 0.5 * np.sin(life_frac * 60.0)
+                amp = life_frac * flicker
+                hue = float(self.phue[i])
+                sat = 0.05
+            else:
+                amp = life_frac
+                hue = float(self.phue[i])
+                sat = float(self.psat[i])
+
+            if amp < 0.02:
+                continue
+
+            # Splat into a small bounding box only.
+            r_radius = int(np.ceil(sigma * 3.0))
+            x0 = max(0, int(x) - r_radius)
+            x1 = min(self.width, int(x) + r_radius + 1)
+            y0 = max(0, int(y) - r_radius)
+            y1 = min(self.height, int(y) + r_radius + 1)
+            if x1 <= x0 or y1 <= y0:
+                continue
+            sub_xx = self.xx[y0:y1, x0:x1]
+            sub_yy = self.yy[y0:y1, x0:x1]
+            d2 = (sub_xx - x) ** 2 + (sub_yy - y) ** 2
+            g = amp * np.exp(-d2 / (2.0 * sigma * sigma))
+            h = np.full_like(g, hue, dtype=np.float32)
+            s = np.full_like(g, sat, dtype=np.float32)
+            rgb = _hsv_to_rgb_array(h, s, g.astype(np.float32)).astype(np.float32)
+            frame[y0:y1, x0:x1] += rgb
+
+        return np.clip(frame, 0.0, 255.0).astype(np.uint8)
+
+    # ---- Frame entry point ----------------------------------------------
+
+    def generate_frame(self, time: float) -> np.ndarray:
+        # First call sets the show start; subsequent calls measure dt.
+        if self._last_t == 0.0 and time > 0.0:
+            self._last_t = time
+            self._show_t0 = time
+            return np.zeros((self.height, self.width, 3), dtype=np.uint8)
+
+        dt = float(time) - self._last_t
+        if dt < 0:
+            # Time went backwards - reset.
+            self._last_t = float(time)
+            self._show_t0 = float(time)
+            self._next_launch_t = float(time) - self._show_t0 + 0.6
+            return np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        # Cap dt to avoid huge jumps after pauses.
+        dt = min(dt, 0.1)
+        self._last_t = float(time)
+
+        # Loop the show.
+        t_show = (float(time) - self._show_t0) % self.show_duration
+        # When wrapping, give a half-second of quiet then restart launches.
+        if t_show < 0.5 and self._next_launch_t > t_show + 1.5:
+            self._next_launch_t = 0.6
+
+        self._update(dt)
+        self._spawn_for_time(t_show)
+        return self._render()
+
+
 # Registry of available automations
 AUTOMATION_REGISTRY = {
     'color_wave': ColorWave,
@@ -1280,6 +1689,7 @@ AUTOMATION_REGISTRY = {
     'supernova_sampler': SupernovaSampler,
     'supernova_blend': SupernovaBlend,
     'cosmic_drift': CosmicDrift,
+    'fireworks_show': FireworksShow,
 }
 
 
