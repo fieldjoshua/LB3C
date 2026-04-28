@@ -213,17 +213,23 @@ def main() -> int:
                     .mean(axis=(1, 3))
                     .astype(np.uint8)
                 )
-                # Optionally overwrite the center KxK with a native render
-                # so a sharp bright core doesn't get washed out by averaging.
+                # Optionally composite a NATIVE render over the center KxK
+                # (per-pixel, per-channel max). The native pass gives the
+                # sharp un-diluted core; the supersampled pass gives the
+                # outer-layer Gaussian spillover and dark-matter dimming.
+                # Taking max of the two preserves both: the bright core
+                # wins where native is brighter, while the supersampled
+                # spillover is kept in pixels around it.
                 if anim_native is not None:
                     nf = anim_native.generate_frame(anim_t)
                     if nf.dtype != np.uint8:
                         nf = np.clip(nf, 0, 255).astype(np.uint8)
+                    cs = np_frame[cy_lo:cy_lo + center_k,
+                                  cx_lo:cx_lo + center_k]
+                    nfs = nf[cy_lo:cy_lo + center_k,
+                             cx_lo:cx_lo + center_k]
                     np_frame[cy_lo:cy_lo + center_k,
-                             cx_lo:cx_lo + center_k] = (
-                        nf[cy_lo:cy_lo + center_k,
-                           cx_lo:cx_lo + center_k]
-                    )
+                             cx_lo:cx_lo + center_k] = np.maximum(cs, nfs)
             if persist is not None:
                 # Decay the persistence buffer; take per-channel max with the
                 # new frame so bright moving features leave fading trails
