@@ -822,19 +822,34 @@ class SupernovaBlend(ProceduralAnimation):
     def __init__(self, width: int, height: int, fps: float = 30,
                  hold_seconds: float = 30.0,
                  crossfade_seconds: float = 30.0,
-                 flash_seconds: float = 0.45):
+                 flash_seconds: float = 0.45,
+                 dark_matter_count: int = 12,
+                 dark_matter_seed: int = 17):
         super().__init__(width, height, fps)
         self.hold = float(hold_seconds)
         self.crossfade = float(crossfade_seconds)
         self.flash = float(flash_seconds)
-        # Slot = crossfade_in + flash + hold. The crossfade_in of nova N
-        # overlaps in time with the previous nova's last 30s of holding,
-        # so the previous nova fades out as nova N fades in on top.
         self.slot = self.crossfade + self.flash + self.hold
         x = np.arange(width, dtype=np.float32)
         y = np.arange(height, dtype=np.float32)
         self.xx, self.yy = np.meshgrid(x, y)
         self._scale = float(min(width, height))
+
+        # Dark-matter spot positions (radial / angular) and properties.
+        # Each spot is a soft Gaussian patch that DIMS the brightness in
+        # its area, breaking the perfect concentric "bullseye" look.
+        rng = np.random.default_rng(dark_matter_seed)
+        n = max(0, int(dark_matter_count))
+        self.n_dark = n
+        # Place spots inside the lit zones: radius in [0.10, 0.45] of scale.
+        self.dark_r0 = rng.uniform(0.10, 0.45, n).astype(np.float32)
+        self.dark_theta0 = rng.uniform(0, 2 * np.pi, n).astype(np.float32)
+        # Blurry spots: sigma 5-12% of scale.
+        self.dark_sigma = rng.uniform(0.05, 0.12, n).astype(np.float32)
+        # Dimming strength per spot (max fraction subtracted).
+        self.dark_strength = rng.uniform(0.40, 0.80, n).astype(np.float32)
+        # Slow angular drift so the dark pockets aren't static.
+        self.dark_drift = rng.uniform(-0.08, 0.08, n).astype(np.float32)
 
     @staticmethod
     def _hue_rgb(hue: float, sat: float) -> Tuple[float, float, float]:
@@ -939,6 +954,24 @@ class SupernovaBlend(ProceduralAnimation):
         max_r = halo_r + halo_w * 2.0
         cutoff = np.clip((max_r + 1.0 - r) / 1.5, 0.0, 1.0)
         value_field = value_field * cutoff
+
+        # Sprinkle blurred dark matter: soft Gaussian patches that dim the
+        # brightness in their area, breaking the perfect concentric look.
+        # Spots slowly drift around the nova so the dark pockets aren't
+        # static. Don't dim the core - the bright center stays clean.
+        if self.n_dark > 0:
+            dark_field = np.zeros_like(value_field)
+            for i in range(self.n_dark):
+                ang = self.dark_theta0[i] + t_global * self.dark_drift[i]
+                cdx = cx + self.dark_r0[i] * scale * np.cos(ang)
+                cdy = cy + self.dark_r0[i] * scale * np.sin(ang)
+                sig = max(1.0, float(self.dark_sigma[i]) * scale)
+                d2 = (self.xx - cdx) ** 2 + (self.yy - cdy) ** 2
+                spot = float(self.dark_strength[i]) * np.exp(-d2 / (2.0 * sig * sig))
+                np.maximum(dark_field, spot, out=dark_field)
+            # Spare the core from dimming.
+            dark_field = dark_field * (1.0 - core_disc)
+            value_field = value_field * (1.0 - dark_field)
 
         # Double flash boosts the core's brightness (not hue).
         if 0.0 <= t_in_slot <= self.flash:
