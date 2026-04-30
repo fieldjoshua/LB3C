@@ -1697,6 +1697,123 @@ class FireworksShow(ProceduralAnimation):
         return self._render()
 
 
+class FlagMashup(ProceduralAnimation):
+    """Union Jack + USA flag mashup, animated.
+
+    Top ~60% of the strip is a blue field with a Union Jack diagonal X
+    (white wide diagonals, red narrow diagonals on top) plus twinkling
+    white stars that double as the USA canton.
+
+    Bottom ~40% is alternating red/white horizontal stripes.
+
+    A gentle horizontal wave (sinusoidal x-displacement that varies with
+    row and time) gives the whole thing a fabric-in-a-breeze feel
+    without distorting the design beyond recognition.
+    """
+
+    BLUE = np.array([12, 35, 130], dtype=np.float32)
+    RED = np.array([200, 30, 35], dtype=np.float32)
+    WHITE = np.array([235, 235, 235], dtype=np.float32)
+
+    def __init__(self, width: int, height: int, fps: float = 30,
+                 num_stars: int = 8, seed: int = 76):
+        super().__init__(width, height, fps)
+        self._scale = float(min(width, height))
+        x = np.arange(width, dtype=np.float32)
+        y = np.arange(height, dtype=np.float32)
+        self.xx, self.yy = np.meshgrid(x, y)
+
+        # Border between top (Union Jack canton) and bottom (stripes).
+        self.top_h = height * 0.6
+        # Diagonal-line thickness, scaled to the resolution.
+        self.diag_white_w = max(0.6, self._scale * 0.10)
+        self.diag_red_w = max(0.4, self._scale * 0.045)
+
+        rng = np.random.default_rng(seed)
+        self.num_stars = int(num_stars)
+        # Stars only in the upper region (the blue canton). Avoid sitting
+        # right on the diagonal lines so they read as stars not as
+        # diagonal sparkles.
+        self.star_x = rng.uniform(0.5, width - 0.5, self.num_stars).astype(np.float32)
+        self.star_y = rng.uniform(0.3, self.top_h - 0.5, self.num_stars).astype(np.float32)
+        self.star_phase = rng.uniform(0, 2 * np.pi, self.num_stars).astype(np.float32)
+        self.star_rate = rng.uniform(1.4, 3.2, self.num_stars).astype(np.float32)
+        self.star_sigma = rng.uniform(0.025, 0.040, self.num_stars).astype(np.float32) * self._scale
+        # Star peak brightness boost (added on top of the existing pixel).
+        self.star_amp = rng.uniform(0.7, 1.0, self.num_stars).astype(np.float32) * 230.0
+
+    def generate_frame(self, time: float) -> np.ndarray:
+        H, W = self.height, self.width
+
+        # Gentle fabric wave: x-displacement varies with row and time.
+        wave_amp = self._scale * 0.025
+        wave_dx = wave_amp * np.sin(self.yy * 0.30 + time * 1.2)
+        sx = self.xx + wave_dx  # sampled x positions
+        sy = self.yy
+
+        # Region masks.
+        in_top = sy < self.top_h           # union jack region
+        in_bot = ~in_top                   # stripes region
+
+        # ---- Union Jack X (top) ----
+        # Diagonals span the top region: y = m * x and y = top_h - m * x
+        cy = self.top_h * 0.5
+        cx = W * 0.5
+        # Use slope ratio so diagonals reach top-region corners.
+        m = (self.top_h - 1) / max(1.0, (W - 1))
+        # Distance from each pixel to the two diagonal lines.
+        # Diagonal 1: (sy - cy) - m * (sx - cx) = 0  -> normal length sqrt(1+m^2)
+        # Diagonal 2: (sy - cy) + m * (sx - cx) = 0
+        norm = np.sqrt(1.0 + m * m)
+        d1 = np.abs((sy - cy) - m * (sx - cx)) / norm
+        d2 = np.abs((sy - cy) + m * (sx - cx)) / norm
+        d_min = np.minimum(d1, d2)
+        white_diag = (d_min < self.diag_white_w) & in_top
+        red_diag = (d_min < self.diag_red_w) & in_top
+
+        # ---- USA stripes (bottom) ----
+        # Map (sy - top_h) into the bottom band; use 4 horizontal bands so
+        # we get a clear red-white-red-white pattern at 10x10.
+        bot_h = max(1.0, H - self.top_h)
+        stripe_idx = np.floor(((sy - self.top_h) / bot_h) * 4.0).astype(np.int32)
+        stripe_idx = np.clip(stripe_idx, 0, 3)
+        red_stripe = ((stripe_idx % 2) == 0) & in_bot
+        white_stripe = ((stripe_idx % 2) == 1) & in_bot
+
+        # ---- Composite ----
+        frame = np.zeros((H, W, 3), dtype=np.float32)
+        # Default top fill: blue
+        frame[in_top] = self.BLUE
+        # White diagonals (drawn first so red diagonals can paint on top)
+        frame[white_diag] = self.WHITE
+        # Red diagonals (narrower, sit inside the white diagonal stripes)
+        frame[red_diag] = self.RED
+        # Stripes
+        frame[red_stripe] = self.RED
+        frame[white_stripe] = self.WHITE
+
+        # ---- Twinkling stars in the canton ----
+        for i in range(self.num_stars):
+            phase = float(self.star_phase[i])
+            rate = float(self.star_rate[i])
+            twink = 0.5 + 0.5 * np.sin(time * rate + phase)
+            if twink < 0.30:
+                continue
+            sx_pos = float(self.star_x[i])
+            sy_pos = float(self.star_y[i])
+            sigma = max(0.5, float(self.star_sigma[i]))
+            amp = float(self.star_amp[i]) * twink
+            r2 = (self.xx - sx_pos) ** 2 + (self.yy - sy_pos) ** 2
+            g = amp * np.exp(-r2 / (2.0 * sigma * sigma))
+            # Don't bleed stars into the stripe region.
+            g = np.where(self.yy < self.top_h, g, 0.0)
+            frame[..., 0] += g
+            frame[..., 1] += g
+            frame[..., 2] += g * 0.85  # slight warm tint
+
+        return np.clip(frame, 0.0, 255.0).astype(np.uint8)
+
+
 # Registry of available automations
 AUTOMATION_REGISTRY = {
     'color_wave': ColorWave,
@@ -1717,6 +1834,7 @@ AUTOMATION_REGISTRY = {
     'supernova_blend': SupernovaBlend,
     'cosmic_drift': CosmicDrift,
     'fireworks_show': FireworksShow,
+    'flag_mashup': FlagMashup,
 }
 
 
