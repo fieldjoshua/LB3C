@@ -123,6 +123,11 @@ def main() -> int:
                          "0.85 nice trails, 0.95 long trails, 1.0 never fades. "
                          "Each frame the previous frame is multiplied by F "
                          "and pixel-max-blended with the new content.")
+    ap.add_argument("--rotate", type=int, default=0, choices=[0, 90, 180, 270],
+                    help="rotate the rendered frame this many degrees "
+                         "clockwise before sending to the LEDs. Use this to "
+                         "match the strip's physical orientation when the "
+                         "animation looks 90/180/270 off.")
     ap.add_argument("-v", "--verbose", action="store_true")
 
     args = ap.parse_args()
@@ -237,12 +242,26 @@ def main() -> int:
                 persist *= fade
                 np.maximum(persist, np_frame.astype(np.float32), out=persist)
                 np_frame = persist.astype(np.uint8)
+            # Rotate the FINAL frame (after fade buffer) so the rotation
+            # applies to what's sent to the strip without scrambling the
+            # persistence buffer's own coordinates.
+            if args.rotate:
+                # numpy rot90 is COUNTER-clockwise; we want clockwise, so
+                # k = -1 for 90 deg, -2 for 180, -3 for 270.
+                k_cw = {90: -1, 180: -2, 270: -3}[args.rotate]
+                np_frame = np.rot90(np_frame, k=k_cw).copy()
             beat_mul = beat_envelope(
                 anim_t, args.bpm or 0.0, args.beat_shape,
                 args.beat_floor, args.beat_decay, args.beat_offset,
             ) if args.bpm else 1.0
             rgb_data = frame_to_rgb_list(np_frame, args.brightness * beat_mul)
-            dev.draw_rgb_frame(args.width, args.height, rgb_data)
+            # After rotation by 90/270 the array's shape is (W, H) instead
+            # of (H, W). draw_rgb_frame treats its width/height args as
+            # the raster shape of rgb_data, so swap accordingly.
+            if args.rotate in (90, 270):
+                dev.draw_rgb_frame(args.height, args.width, rgb_data)
+            else:
+                dev.draw_rgb_frame(args.width, args.height, rgb_data)
             frames_sent += 1
 
             if now - last_report >= 5.0:
