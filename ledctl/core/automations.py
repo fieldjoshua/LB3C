@@ -395,7 +395,11 @@ class Metaballs(ProceduralAnimation):
             d2 = (self.xx - cx) ** 2 + (self.yy - cy) ** 2
             field += (self.radius * self.radius) / (d2 + 0.5)
         v = np.tanh(field / float(self.num_balls))
-        h = (field * 0.04 + time * self.hue_speed) % 1.0
+        # Use the normalized `v` (already 0..1, tanh-clamped) instead of
+        # raw `field` whose magnitude scales quadratically with the render
+        # resolution. Otherwise supersampling cycles the hue many times
+        # within a single LED's area = looks "zoomed in".
+        h = (v * 0.4 + time * self.hue_speed) % 1.0
         s = np.clip(0.6 + 0.3 * v, 0.0, 1.0)
         return _hsv_to_rgb_array(h, s, v)
 
@@ -475,6 +479,10 @@ class Aurora(ProceduralAnimation):
         y = np.arange(height, dtype=np.float32)
         self.xx, self.yy = np.meshgrid(x, y)
         self.y_norm = self.yy / max(height - 1, 1)
+        # Normalized x so the ribbon wobble has the same number of waves
+        # across the strip regardless of render resolution. Without this
+        # supersampling would pack more wobbles per ribbon = looks "zoomed".
+        self.x_norm = self.xx / max(width - 1, 1)
 
     def generate_frame(self, time: float) -> np.ndarray:
         t = time * self.drift_speed
@@ -484,8 +492,8 @@ class Aurora(ProceduralAnimation):
         for i in range(self.ribbon_count):
             y_center = (i + 1) / (self.ribbon_count + 1)
             wob = (
-                0.10 * np.sin(self.xx * 0.55 + t * (1.0 + 0.3 * i))
-                + 0.06 * np.sin(self.xx * 0.27 + t * 0.7)
+                0.10 * np.sin(self.x_norm * 5.5 + t * (1.0 + 0.3 * i))
+                + 0.06 * np.sin(self.x_norm * 2.7 + t * 0.7)
             )
             band = np.exp(-((self.y_norm - y_center - wob) ** 2) / 0.012)
             intensity += band

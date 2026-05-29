@@ -128,6 +128,10 @@ def main() -> int:
                          "clockwise before sending to the LEDs. Use this to "
                          "match the strip's physical orientation when the "
                          "animation looks 90/180/270 off.")
+    ap.add_argument("--speed", type=float, default=1.0, metavar="X",
+                    help="time multiplier passed into the animation. "
+                         "1.0 = normal, 2.0 = twice as fast, 0.5 = half "
+                         "speed. Applied to the t value of generate_frame.")
     ap.add_argument("-v", "--verbose", action="store_true")
 
     args = ap.parse_args()
@@ -208,7 +212,7 @@ def main() -> int:
             if args.duration is not None and (now - t0) >= args.duration:
                 break
 
-            anim_t = now - t0
+            anim_t = (now - t0) * args.speed
             np_frame = anim.generate_frame(anim_t)
             if ss > 1:
                 # Block-average ss x ss neighborhoods down to (height, width).
