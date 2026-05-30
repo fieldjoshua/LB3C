@@ -2791,6 +2791,201 @@ class SkyCycle(ProceduralAnimation):
         return np.clip(frame, 0.0, 255.0).astype(np.float32)
 
 
+class NebulaCycle(ProceduralAnimation):
+    """Famous nebulae, 30s crossfading between each.
+
+    Each renders a simplified version of a real Hubble photograph signature
+    (palette + dominant structure) abstracted for a 10x10 + diffuser. Uses
+    everything we've built:
+      - float output (sigma-delta dithering)
+      - coherent value noise for gas (not random)
+      - anti-light contrast where it makes structure pop
+      - feathered edges so gas dissolves into space (--param feather)
+      - hard outer cutoff for genuinely black corners
+      - layered structure (back gas + structure + bright core)
+
+    Nebulae (5):
+      orion     M42 - pink/magenta gas, bright cluster, cyan periphery
+      helix     NGC 7293 - red outer ring, blue inner ring, white star
+      pillars   M16 Eagle - vertical dark columns, tan gas, bright stars
+      cats_eye  NGC 6543 - concentric red / yellow-green / blue shells
+      crab      M1 - round red filaments around blue pulsar
+    """
+
+    NEBULAE = ['orion', 'helix', 'pillars', 'cats_eye', 'crab']
+
+    def __init__(self, width, height, fps=30,
+                 hold_seconds=60.0, crossfade_seconds=30.0,
+                 feather=0.20, seed=42):
+        super().__init__(width, height, fps)
+        self.hold = float(hold_seconds)
+        self.crossfade = float(crossfade_seconds)
+        self.slot = self.hold + self.crossfade
+        self.feather = max(0.04, float(feather))
+        self._scale = float(min(width, height))
+        xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
+        yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
+        self.xn, self.yn = np.meshgrid(xn, yn)
+        self.xx, self.yy = np.meshgrid(np.arange(width, dtype=np.float32),
+                                       np.arange(height, dtype=np.float32))
+        cx, cy = (width - 1) * 0.5, (height - 1) * 0.5
+        self.cxp, self.cyp = cx, cy
+        max_r = max(np.hypot(cx, cy), 1.0)
+        self.r = (np.sqrt((self.xx - cx) ** 2 + (self.yy - cy) ** 2)
+                  / max_r).astype(np.float32)
+        self.noise_a = _ValueNoise3D(16, seed)
+
+    @staticmethod
+    def _smoothstep(u):
+        u = max(0.0, min(1.0, float(u)))
+        return u * u * (3.0 - 2.0 * u)
+
+    def _gauss_xy(self, cx, cy, sigma):
+        d2 = (self.xx - cx) ** 2 + (self.yy - cy) ** 2
+        return np.exp(-d2 / (2.0 * sigma * sigma))
+
+    # ---- ORION M42 ----
+    def _render_orion(self, t):
+        frame = np.zeros((self.height, self.width, 3), np.float32)
+        z = t * 0.018
+        wx = (_fbm(self.noise_a, self.xn * 2.2, self.yn * 2.2, z, 2) - 0.5) * 0.4
+        wy = (_fbm(self.noise_a, self.xn * 2.2 + 7, self.yn * 2.2 + 7, z, 2) - 0.5) * 0.4
+        n = _fbm(self.noise_a, self.xn * 2.0 + wx + z * 0.4,
+                 self.yn * 1.8 + wy, z, octaves=3)
+        bias = np.exp(-((self.xn - 0.40) ** 2 + (self.yn - 0.48) ** 2) / 0.20)
+        gas_field = np.clip(n * bias * 1.4, 0.0, 1.0)
+        magenta = np.array([180, 50, 130], np.float32)
+        violet = np.array([90, 40, 160], np.float32)
+        frame += magenta[None, None] * gas_field[..., None] * 0.85
+        frame += violet[None, None] * (gas_field[..., None] ** 2) * 0.4
+        cyan_ring = np.exp(-((self.r - 0.55) ** 2) / 0.08) * gas_field
+        frame[..., 1] += cyan_ring * 60
+        frame[..., 2] += cyan_ring * 90
+        tcx = (self.width - 1) * 0.42
+        tcy = (self.height - 1) * 0.48
+        core_sigma = max(0.40, self._scale * 0.05)
+        core = self._gauss_xy(tcx, tcy, core_sigma)
+        pulse = 0.85 + 0.15 * np.sin(t * 0.22)
+        core_col = np.array([255, 170, 200], np.float32)
+        frame += core_col[None, None] * (core[..., None] * 220.0 * pulse / 255.0)
+        d2c = (self.xx - tcx) ** 2 + (self.yy - tcy) ** 2
+        halo = np.clip(np.exp(-d2c / (2 * (core_sigma * 2.5) ** 2)) - core, 0.0, 1.0)
+        frame *= (1.0 - halo[..., None] * 0.30)
+        outer = np.clip((0.85 - self.r) / self.feather, 0.0, 1.0)
+        frame *= outer[..., None]
+        return frame
+
+    # ---- HELIX NGC 7293 ----
+    def _render_helix(self, t):
+        frame = np.zeros((self.height, self.width, 3), np.float32)
+        z = t * 0.04
+        n = _fbm(self.noise_a, self.xn * 2.4, self.yn * 2.4, z, 2)
+        wob = 0.04 * (n - 0.5)
+        red_ring = np.exp(-((self.r + wob - 0.55) ** 2) / 0.035)
+        frame += np.array([210, 50, 90], np.float32)[None, None] * red_ring[..., None] * 0.95
+        blue_ring = np.exp(-((self.r + wob - 0.30) ** 2) / 0.022)
+        frame += np.array([40, 160, 210], np.float32)[None, None] * blue_ring[..., None] * 0.95
+        d2c = (self.xx - self.cxp) ** 2 + (self.yy - self.cyp) ** 2
+        star_sigma = max(0.32, self._scale * 0.035)
+        star = np.exp(-d2c / (2.0 * star_sigma * star_sigma))
+        frame += np.array([220, 235, 250], np.float32)[None, None] * star[..., None]
+        frame *= (0.80 + 0.40 * n[..., None])
+        outer = np.clip((0.78 - self.r) / self.feather, 0.0, 1.0)
+        frame *= outer[..., None]
+        return frame
+
+    # ---- EAGLE M16 Pillars ----
+    def _render_pillars(self, t):
+        frame = np.zeros((self.height, self.width, 3), np.float32)
+        z = t * 0.012
+        n = _fbm(self.noise_a, self.xn * 2.0 + z * 0.3, self.yn * 2.0, z, octaves=3)
+        gas = np.array([170, 80, 40], np.float32)
+        teal = np.array([40, 150, 110], np.float32)
+        top_haze = np.clip(1.0 - self.yn, 0.0, 1.0)
+        frame += gas[None, None] * (
+            (0.55 + 0.45 * n[..., None]) * (0.55 + 0.45 * top_haze[..., None]))
+        frame += teal[None, None] * (top_haze[..., None] * n[..., None]) * 0.35
+        pcol = 0.5 + 0.5 * np.sin(self.xn * 2.0 * np.pi * 1.4 + 0.3)
+        pcol = pcol ** 4
+        pmask = np.clip((self.yn - 0.25) / 0.10, 0.0, 1.0)
+        pillar = pcol * pmask * 0.85
+        frame *= (1.0 - pillar[..., None])
+        for sx_frac, sy_frac, w in [(0.20, 0.15, 1.0),
+                                     (0.55, 0.10, 0.7),
+                                     (0.78, 0.22, 0.85)]:
+            sx = (self.width - 1) * sx_frac
+            sy = (self.height - 1) * sy_frac
+            d2 = (self.xx - sx) ** 2 + (self.yy - sy) ** 2
+            s = np.exp(-d2 / (2.0 * 0.42 ** 2)) * 200.0 * w
+            frame[..., 0] += s
+            frame[..., 1] += s * 0.95
+            frame[..., 2] += s * 0.85
+        return frame
+
+    # ---- CAT'S EYE NGC 6543 ----
+    def _render_cats_eye(self, t):
+        frame = np.zeros((self.height, self.width, 3), np.float32)
+        n = _fbm(self.noise_a, self.xn * 3.0, self.yn * 3.0, t * 0.02, 2)
+        breathe = 0.85 + 0.15 * np.sin(t * 0.18)
+        outer = np.exp(-((self.r - 0.62) ** 2) / 0.025)
+        frame += np.array([210, 50, 50], np.float32)[None, None] * outer[..., None] * (0.95 * breathe)
+        mid = np.exp(-((self.r - 0.40) ** 2) / 0.020)
+        frame += np.array([200, 200, 60], np.float32)[None, None] * mid[..., None] * (0.85 * breathe)
+        inner = np.exp(-((self.r - 0.22) ** 2) / 0.018)
+        frame += np.array([60, 130, 220], np.float32)[None, None] * inner[..., None] * (1.0 * breathe)
+        d2c = (self.xx - self.cxp) ** 2 + (self.yy - self.cyp) ** 2
+        star = np.exp(-d2c / (2.0 * max(0.36, self._scale * 0.04) ** 2))
+        frame += np.array([250, 235, 200], np.float32)[None, None] * star[..., None]
+        frame *= (0.80 + 0.30 * n[..., None])
+        cut = np.clip((0.82 - self.r) / self.feather, 0.0, 1.0)
+        frame *= cut[..., None]
+        return frame
+
+    # ---- CRAB M1 ----
+    def _render_crab(self, t):
+        frame = np.zeros((self.height, self.width, 3), np.float32)
+        z = t * 0.05
+        n = _fbm(self.noise_a, self.xn * 3.2 + z, self.yn * 3.2, z, 4)
+        ridge = 1.0 - np.abs(2.0 * n - 1.0)
+        ridge = ridge ** 1.5
+        radial = np.exp(-(self.r ** 2) / 0.30)
+        red = np.array([220, 70, 50], np.float32)
+        mag = np.array([180, 60, 110], np.float32)
+        intensity = ridge * radial
+        frame += red[None, None] * intensity[..., None] * 0.90
+        frame += mag[None, None] * (intensity[..., None] ** 2) * 0.5
+        d2c = (self.xx - self.cxp) ** 2 + (self.yy - self.cyp) ** 2
+        inner_glow = np.exp(-d2c / (2.0 * (self._scale * 0.18) ** 2))
+        bluewhite = np.array([130, 170, 230], np.float32)
+        frame += bluewhite[None, None] * inner_glow[..., None] * 0.55
+        pulsar = np.exp(-d2c / (2.0 * 0.40 ** 2))
+        flicker = 0.85 + 0.15 * np.sin(t * 3.0)
+        ps = np.array([245, 245, 230], np.float32)
+        frame += ps[None, None] * pulsar[..., None] * (220.0 / 255.0 * flicker)
+        cut = np.clip((0.85 - self.r) / self.feather, 0.0, 1.0)
+        frame *= cut[..., None]
+        return frame
+
+    def _render_one(self, name, t):
+        return getattr(self, f"_render_{name}")(t)
+
+    def generate_frame(self, t):
+        t = float(t)
+        n_nebs = len(self.NEBULAE)
+        idx = int(t // self.slot) % n_nebs
+        t_in = t % self.slot
+        cur = self.NEBULAE[idx]
+        if t_in < self.hold:
+            frame = self._render_one(cur, t)
+        else:
+            u = self._smoothstep((t_in - self.hold) / max(0.01, self.crossfade))
+            nxt = self.NEBULAE[(idx + 1) % n_nebs]
+            a = self._render_one(cur, t)
+            b = self._render_one(nxt, t)
+            frame = a * (1.0 - u) + b * u
+        return np.clip(frame, 0.0, 255.0).astype(np.float32)
+
+
 # Registry of available automations
 AUTOMATION_REGISTRY = {
     'color_wave': ColorWave,
@@ -2831,6 +3026,7 @@ AUTOMATION_REGISTRY = {
     'ambient_nebula': AmbientNebula,
     'ambient_wood': AmbientWood,
     'sky_cycle': SkyCycle,
+    'nebula_cycle': NebulaCycle,
 }
 
 
