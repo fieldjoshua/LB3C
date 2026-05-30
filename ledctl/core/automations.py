@@ -1979,7 +1979,11 @@ class AmbientField(ProceduralAnimation):
         a = np.sin(2 * np.pi * (xx * self.fx) + t * 0.05 * s)
         b = np.sin(2 * np.pi * (yy * self.fy) - t * 0.043 * s)
         c = np.sin(2 * np.pi * ((xx + yy) * self.fd) + t * 0.031 * s)
-        color_f = 0.5 + 0.5 * ((a + b + c) / 3.0)
+        color_f = (a + b + c) / 3.0
+        # The sum-of-sines clusters near the middle; expand its contrast with
+        # tanh so the field actually travels to the vivid ends of the palette
+        # instead of hovering in the washed-out midtones.
+        color_f = 0.5 + 0.5 * np.tanh(color_f * 2.4)
         # Brightness field: different slow combo -> vfloor..1 (gives depth).
         d = np.sin(2 * np.pi * (xx * 0.7) - t * 0.027 * s)
         e = np.sin(2 * np.pi * (yy * 0.6) + t * 0.019 * s)
@@ -1998,6 +2002,12 @@ class AmbientField(ProceduralAnimation):
         frac = (fp - np.floor(fp)).astype(np.float32)[..., None]
         i1 = (i0 + 1) % self.lut_n
         col = self.lut[i0] * (1.0 - frac) + self.lut[i1] * frac
+        # Saturation boost: push each pixel away from its own gray level to
+        # counteract the dulling that linear RGB interpolation introduces
+        # between hue stops. Keeps the colors vivid, not pastel/washed.
+        gray = col.mean(axis=2, keepdims=True)
+        col = gray + (col - gray) * 1.35
+        col = np.clip(col, 0.0, 255.0)
         out = col * (bright_f[..., None] * breathe)
         # Return float32 (0..255) so the player can dither for smoothness.
         return out.astype(np.float32)

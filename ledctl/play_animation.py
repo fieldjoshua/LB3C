@@ -43,44 +43,14 @@ def list_animations() -> None:
         print(f"  {name:18s}  {summary}")
 
 
-# 8x8 ordered (Bayer) dither matrix, normalized to [0, 1).
-_BAYER8 = np.array([
-    [0, 48, 12, 60, 3, 51, 15, 63],
-    [32, 16, 44, 28, 35, 19, 47, 31],
-    [8, 56, 4, 52, 11, 59, 7, 55],
-    [40, 24, 36, 20, 43, 27, 39, 23],
-    [2, 50, 14, 62, 1, 49, 13, 61],
-    [34, 18, 46, 30, 33, 17, 45, 29],
-    [10, 58, 6, 54, 9, 57, 5, 53],
-    [42, 26, 38, 22, 41, 25, 37, 21],
-], dtype=np.float32) / 64.0
-
-
-def dither_to_uint8(frame_float: np.ndarray, frame_idx: int,
-                    period: int = 8) -> np.ndarray:
-    """Ordered-dither a float (0..255) frame down to uint8.
-
-    Spatial: an 8x8 Bayer threshold pushes sub-LSB fractions stochastically
-    across the rounding boundary, so a value of e.g. 10.3 lands on 11 in
-    ~30% of pixels and 10 in the rest -> averages to 10.3.
-
-    Temporal: the pattern slowly translates so the per-pixel threshold
-    isn't fixed forever, which would otherwise lock-in a spatial texture.
-    The shift is intentionally LOW frequency (1 cell every `period` frames,
-    full 8-cell cycle every 8*period frames) so it reads as a calm
-    creeping texture instead of per-frame jitter. period=0 disables the
-    shift entirely (pure spatial dither).
-    """
-    H, W, _ = frame_float.shape
-    if period > 0:
-        step = frame_idx // max(1, int(period))
-        b = np.roll(_BAYER8, (step % 8, (step * 3) % 8), axis=(0, 1))
-    else:
-        b = _BAYER8
-    reps_y, reps_x = (H + 7) // 8, (W + 7) // 8
-    thr = np.tile(b, (reps_y, reps_x))[:H, :W][..., None]  # 0..1
-    out = np.floor(frame_float + thr)
-    return np.clip(out, 0, 255).astype(np.uint8)
+# --- Dithering -------------------------------------------------------------
+# We use 1st-order sigma-delta (temporal error feedback) rather than a spatial
+# ordered/Bayer pattern. Each pixel carries its quantization remainder -
+# positive OR negative ("negative light") - into the next frame, so a value of
+# 10.4 emits 10,10,11,10,10,11... averaging exactly 10.4 with no fixed spatial
+# texture. There's no grid pattern to translate, so nothing "shimmers"; at
+# 60-120fps the per-pixel toggle is above flicker fusion and disappears into
+# smooth color. Pairs with --fps: higher fps = smoother / more invisible.
 
 
 def frame_to_rgb_list(
@@ -104,7 +74,9 @@ def main() -> int:
     ap.add_argument("--height", type=int, default=10)
     ap.add_argument("--count", type=int, default=None,
                     help="LED count (default = width*height)")
-    ap.add_argument("--fps", type=float, default=30.0)
+    ap.add_argument("--fps", type=float, default=60.0,
+                    help="frame rate. Higher = smoother sigma-delta dithering "
+                         "(60 default; try 90-120 for ambient).")
 
     # Look / timing.
     ap.add_argument("--brightness", type=float, default=1.0,
@@ -126,14 +98,9 @@ def main() -> int:
                     choices=["serpentine", "linear"])
 
     ap.add_argument("--no-dither", action="store_true",
-                    help="disable temporal+spatial dithering. Dithering is "
-                         "on by default and gives smooth gradients out of the "
-                         "8-bit panel for float-output animations (ambient_*).")
-    ap.add_argument("--dither-period", type=int, default=8, metavar="N",
-                    help="frames between dither-pattern shifts. Higher = "
-                         "calmer, less shimmer (default 8). 0 = pattern "
-                         "never shifts (pure spatial dither, no temporal "
-                         "component at all). 1 = old fast behavior.")
+                    help="disable sigma-delta dithering. Dithering is on by "
+                         "default and pulls smooth gradients out of the 8-bit "
+                         "panel for float-output animations (ambient_*).")
 
     ap.add_argument("-v", "--verbose", action="store_true")
 
@@ -189,6 +156,7 @@ def main() -> int:
     next_tick = t0
     frames_sent = 0
     last_report = t0
+    sd_err = None  # sigma-delta per-pixel error accumulator (lazy init)
     try:
         while not stop_requested["value"]:
             now = time.monotonic()
@@ -199,14 +167,20 @@ def main() -> int:
             np_frame = anim.generate_frame(anim_t)
 
             # Float-output animations (ambient_*) carry sub-8-bit color.
-            # Apply brightness in float, then dither down to uint8 so the
-            # gradients stay smooth instead of banding.
+            # Apply brightness in float, then sigma-delta dither to uint8:
+            # add the carried error, round, and carry the new remainder
+            # (positive or negative) into the next frame. No spatial pattern,
+            # so no shimmer; just per-pixel temporal averaging.
             applied_brightness = args.brightness
             if np.issubdtype(np_frame.dtype, np.floating):
                 f = np_frame * args.brightness if args.brightness != 1.0 else np_frame
                 if not args.no_dither:
-                    np_frame = dither_to_uint8(f, frames_sent,
-                                               period=args.dither_period)
+                    if sd_err is None or sd_err.shape != f.shape:
+                        sd_err = np.zeros_like(f, dtype=np.float32)
+                    target = f + sd_err
+                    rounded = np.round(target)
+                    sd_err = (target - rounded).astype(np.float32)
+                    np_frame = np.clip(rounded, 0, 255).astype(np.uint8)
                 else:
                     np_frame = np.clip(f, 0, 255).astype(np.uint8)
                 applied_brightness = 1.0  # already applied above
