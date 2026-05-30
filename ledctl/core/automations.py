@@ -2649,11 +2649,6 @@ class SkyCycle(ProceduralAnimation):
         self.moon_sigma = max(0.32, min(width, height) * 0.035)
         # Moonlight reach: a touch wider, so the proximity gradient is clear.
         self.moon_reach = max(2.4, min(width, height) * 0.28)
-        # Deterministic lightning schedule (phase positions in the storm).
-        rng = np.random.default_rng(seed + 1)
-        n_flash = 6
-        self.flash_t = np.sort(rng.uniform(0.88, 0.94, n_flash)).astype(np.float32)
-        self.flash_x = rng.uniform(0.2, 0.8, n_flash).astype(np.float32)
 
     @staticmethod
     def _interp_color(keys, x):
@@ -2761,27 +2756,6 @@ class SkyCycle(ProceduralAnimation):
         # --- 6. Composite clouds OVER everything (occludes moon where dense) ---
         op3 = op[..., None]
         frame = frame * (1.0 - op3) + cloud_col * op3
-
-        # --- 7. Lightning during the storm ---
-        if storm > 0.05:
-            flash = 0.0
-            bolt_x = 0.5
-            for ft, fx in zip(self.flash_t, self.flash_x):
-                dt = ph - ft
-                if 0.0 <= dt < 0.02:
-                    env = np.exp(-dt / 0.004) * (0.6 + 0.4 * np.sin(dt * 1800))
-                    if env > flash:
-                        flash = env
-                        bolt_x = fx
-            if flash > 0.01:
-                amount = flash * storm
-                # Whole-scene cloud-lit flash...
-                frame += np.array([170, 190, 255], np.float32) * (amount * 0.65)
-                # ...plus a brighter vertical column where the bolt strikes.
-                col_x = bolt_x * (self.width - 1)
-                colmask = np.exp(-((self.xx - col_x) ** 2) / (2.0 * 0.9 ** 2))
-                frame += np.array([220, 235, 255], np.float32) * \
-                    (colmask[..., None] * amount * 1.4)
 
         return np.clip(frame, 0.0, 255.0).astype(np.float32)
 
