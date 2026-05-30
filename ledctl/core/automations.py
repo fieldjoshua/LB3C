@@ -2033,6 +2033,183 @@ class AmbientColorField(AmbientField):
     MOOD = 'color_field'
 
 
+# --- Shared helpers for the structured ambient set -------------------------
+
+def _build_palette_lut(stops, n=512):
+    """Cyclic palette -> (n, 3) float32 LUT. stops: [(pos0..1, (r,g,b)), ...]."""
+    stops = sorted(stops)
+    pos = np.array([p for p, _ in stops] + [1.0 + stops[0][0]], dtype=np.float64)
+    lut = np.zeros((n, 3), dtype=np.float32)
+    q = np.linspace(0.0, 1.0, n, endpoint=False)
+    for ch in range(3):
+        vals = np.array([c[ch] for _, c in stops] + [stops[0][1][ch]],
+                        dtype=np.float64)
+        lut[:, ch] = np.interp(q, pos, vals).astype(np.float32)
+    return lut
+
+
+def _map_lut(lut, field):
+    """Map a (H, W) field in 0..1 through a cyclic LUT with linear interp."""
+    n = lut.shape[0]
+    fp = field * n
+    i0 = np.floor(fp).astype(np.int32) % n
+    frac = (fp - np.floor(fp)).astype(np.float32)[..., None]
+    i1 = (i0 + 1) % n
+    return lut[i0] * (1.0 - frac) + lut[i1] * frac
+
+
+def _sat_boost(col, amt=1.3):
+    """Push each pixel away from its own gray for vividness."""
+    gray = col.mean(axis=2, keepdims=True)
+    return np.clip(gray + (col - gray) * amt, 0.0, 255.0)
+
+
+class AmbientRipples(ProceduralAnimation):
+    """Concentric color rings expanding from center - calm, ordered, pond-like."""
+
+    PALETTE = [(0.00, (4, 6, 32)), (0.30, (0, 80, 150)), (0.55, (0, 185, 205)),
+               (0.78, (190, 245, 255)), (0.90, (180, 55, 165))]
+
+    def __init__(self, width, height, fps=30, speed=1.0, rings=2.4):
+        super().__init__(width, height, fps)
+        cx, cy = (width - 1) / 2.0, (height - 1) / 2.0
+        xx, yy = np.meshgrid(np.arange(width, dtype=np.float32),
+                             np.arange(height, dtype=np.float32))
+        self.r = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2) / max(
+            1.0, np.sqrt(cx * cx + cy * cy))
+        self.rings = rings
+        self.speed = speed
+        self.lut = _build_palette_lut(self.PALETTE)
+
+    def generate_frame(self, time):
+        t = float(time)
+        phase = self.r * self.rings - t * 0.18 * self.speed
+        col = _map_lut(self.lut, phase % 1.0)
+        ringv = 0.55 + 0.45 * np.sin(2 * np.pi * phase)
+        col = _sat_boost(col, 1.3)
+        return (col * ringv[..., None]).astype(np.float32)
+
+
+class AmbientSpiral(ProceduralAnimation):
+    """Slow rotating spiral arms, hue varying along the arm. Ordered, hypnotic."""
+
+    PALETTE = [(0.00, (8, 2, 35)), (0.25, (60, 18, 140)), (0.50, (180, 40, 170)),
+               (0.72, (235, 80, 130)), (0.88, (60, 80, 200))]
+
+    def __init__(self, width, height, fps=30, speed=1.0, arms=2.0, twist=2.5):
+        super().__init__(width, height, fps)
+        cx, cy = (width - 1) / 2.0, (height - 1) / 2.0
+        xx, yy = np.meshgrid(np.arange(width, dtype=np.float32),
+                             np.arange(height, dtype=np.float32))
+        self.theta = np.arctan2(yy - cy, xx - cx) / (2.0 * np.pi)  # -0.5..0.5
+        self.r = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2) / max(
+            1.0, np.sqrt(cx * cx + cy * cy))
+        self.arms = arms
+        self.twist = twist
+        self.speed = speed
+        self.lut = _build_palette_lut(self.PALETTE)
+
+    def generate_frame(self, time):
+        t = float(time)
+        phase = self.arms * self.theta + self.r * self.twist - t * 0.20 * self.speed
+        col = _map_lut(self.lut, phase % 1.0)
+        # Soft radial vignette so the center reads as the spiral's hub.
+        vign = np.clip(1.0 - 0.5 * self.r * self.r, 0.25, 1.0)
+        col = _sat_boost(col, 1.3)
+        return (col * vign[..., None]).astype(np.float32)
+
+
+class AmbientSweep(ProceduralAnimation):
+    """A color gradient that slowly rotates across the panel. Minimal, ordered."""
+
+    PALETTE = [(0.00, (10, 40, 90)), (0.25, (20, 140, 150)),
+               (0.50, (120, 60, 180)), (0.72, (230, 70, 140)),
+               (0.88, (240, 150, 60))]
+
+    def __init__(self, width, height, fps=30, speed=1.0):
+        super().__init__(width, height, fps)
+        xn = np.linspace(-0.5, 0.5, width, dtype=np.float32)
+        yn = np.linspace(-0.5, 0.5, height, dtype=np.float32)
+        self.xn, self.yn = np.meshgrid(xn, yn)
+        self.speed = speed
+        self.lut = _build_palette_lut(self.PALETTE)
+
+    def generate_frame(self, time):
+        t = float(time)
+        angle = t * 0.10 * self.speed
+        proj = self.xn * np.cos(angle) + self.yn * np.sin(angle)  # ~ -0.7..0.7
+        field = (proj * 1.3 + t * 0.07 * self.speed) % 1.0
+        col = _map_lut(self.lut, field)
+        breathe = 0.85 + 0.15 * np.sin(t * 0.12 * self.speed)
+        col = _sat_boost(col, 1.25)
+        return (col * breathe).astype(np.float32)
+
+
+class AmbientBloom(ProceduralAnimation):
+    """A glowing center that breathes outward and shifts hue. Symmetric, calm."""
+
+    PALETTE = [(0.00, (40, 4, 30)), (0.30, (180, 30, 40)), (0.55, (240, 120, 30)),
+               (0.78, (250, 210, 120)), (0.92, (230, 120, 160))]
+
+    def __init__(self, width, height, fps=30, speed=1.0):
+        super().__init__(width, height, fps)
+        cx, cy = (width - 1) / 2.0, (height - 1) / 2.0
+        xx, yy = np.meshgrid(np.arange(width, dtype=np.float32),
+                             np.arange(height, dtype=np.float32))
+        self.r = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2) / max(
+            1.0, np.sqrt(cx * cx + cy * cy))
+        self.speed = speed
+        self.lut = _build_palette_lut(self.PALETTE)
+
+    def generate_frame(self, time):
+        t = float(time)
+        breathe = 0.5 + 0.5 * np.sin(t * 0.30 * self.speed)
+        # Bloom radius grows/shrinks with the breath.
+        radius = 0.35 + 0.5 * breathe
+        bright = np.clip(1.15 - self.r / radius, 0.0, 1.0)
+        field = (self.r * 0.8 - t * 0.05 * self.speed) % 1.0
+        col = _map_lut(self.lut, field)
+        col = _sat_boost(col, 1.3)
+        return (col * bright[..., None]).astype(np.float32)
+
+
+class AmbientLavaLamp(ProceduralAnimation):
+    """Rising, merging soft blobs - classic lava lamp. Organic but not noisy."""
+
+    PALETTE = [(0.00, (6, 2, 22)), (0.42, (70, 12, 50)), (0.66, (205, 40, 30)),
+               (0.84, (255, 120, 24)), (0.96, (255, 205, 90))]
+
+    def __init__(self, width, height, fps=30, speed=1.0, num_blobs=5):
+        super().__init__(width, height, fps)
+        xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
+        yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
+        self.xn, self.yn = np.meshgrid(xn, yn)
+        self.n = int(num_blobs)
+        self.speed = speed
+        # Deterministic (not random) blob parameters: evenly spread phases.
+        i = np.arange(self.n)
+        self.sway_phase = (i / self.n) * 2.0 * np.pi
+        self.sway_freq = 0.15 + 0.05 * i
+        self.rise = 0.035 + 0.012 * ((i % 3))
+        self.y0 = i / self.n
+        self.r2 = (0.17 ** 2)
+        self.lut = _build_palette_lut(self.PALETTE)
+
+    def generate_frame(self, time):
+        t = float(time)
+        field = np.zeros_like(self.xn)
+        for i in range(self.n):
+            cx = 0.5 + 0.32 * np.sin(t * self.sway_freq[i] * self.speed
+                                     + self.sway_phase[i])
+            cy = (self.y0[i] - t * self.rise[i] * self.speed) % 1.0
+            d2 = (self.xn - cx) ** 2 + (self.yn - cy) ** 2
+            field += self.r2 / (d2 + 0.004)
+        v = np.tanh(field / self.n * 1.6)  # 0..1 smooth blob coverage
+        col = _map_lut(self.lut, v)
+        col = _sat_boost(col, 1.3)
+        return col.astype(np.float32)
+
+
 # Registry of available automations
 AUTOMATION_REGISTRY = {
     'color_wave': ColorWave,
@@ -2058,6 +2235,11 @@ AUTOMATION_REGISTRY = {
     'ambient_lava': AmbientLava,
     'ambient_aurora': AmbientAurora,
     'ambient_field': AmbientColorField,
+    'ambient_ripples': AmbientRipples,
+    'ambient_spiral': AmbientSpiral,
+    'ambient_sweep': AmbientSweep,
+    'ambient_bloom': AmbientBloom,
+    'ambient_lavalamp': AmbientLavaLamp,
 }
 
 
