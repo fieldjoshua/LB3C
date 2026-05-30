@@ -56,18 +56,27 @@ _BAYER8 = np.array([
 ], dtype=np.float32) / 64.0
 
 
-def dither_to_uint8(frame_float: np.ndarray, frame_idx: int) -> np.ndarray:
+def dither_to_uint8(frame_float: np.ndarray, frame_idx: int,
+                    period: int = 8) -> np.ndarray:
     """Ordered-dither a float (0..255) frame down to uint8.
 
     Spatial: an 8x8 Bayer threshold pushes sub-LSB fractions stochastically
     across the rounding boundary, so a value of e.g. 10.3 lands on 11 in
     ~30% of pixels and 10 in the rest -> averages to 10.3.
 
-    Temporal: the pattern shifts every frame so the dither moves; the eye
-    and the diffuser integrate it, yielding apparent >8-bit smoothness.
+    Temporal: the pattern slowly translates so the per-pixel threshold
+    isn't fixed forever, which would otherwise lock-in a spatial texture.
+    The shift is intentionally LOW frequency (1 cell every `period` frames,
+    full 8-cell cycle every 8*period frames) so it reads as a calm
+    creeping texture instead of per-frame jitter. period=0 disables the
+    shift entirely (pure spatial dither).
     """
     H, W, _ = frame_float.shape
-    b = np.roll(_BAYER8, ((frame_idx * 3) % 8, (frame_idx * 5) % 8), axis=(0, 1))
+    if period > 0:
+        step = frame_idx // max(1, int(period))
+        b = np.roll(_BAYER8, (step % 8, (step * 3) % 8), axis=(0, 1))
+    else:
+        b = _BAYER8
     reps_y, reps_x = (H + 7) // 8, (W + 7) // 8
     thr = np.tile(b, (reps_y, reps_x))[:H, :W][..., None]  # 0..1
     out = np.floor(frame_float + thr)
@@ -120,6 +129,11 @@ def main() -> int:
                     help="disable temporal+spatial dithering. Dithering is "
                          "on by default and gives smooth gradients out of the "
                          "8-bit panel for float-output animations (ambient_*).")
+    ap.add_argument("--dither-period", type=int, default=8, metavar="N",
+                    help="frames between dither-pattern shifts. Higher = "
+                         "calmer, less shimmer (default 8). 0 = pattern "
+                         "never shifts (pure spatial dither, no temporal "
+                         "component at all). 1 = old fast behavior.")
 
     ap.add_argument("-v", "--verbose", action="store_true")
 
@@ -191,7 +205,8 @@ def main() -> int:
             if np.issubdtype(np_frame.dtype, np.floating):
                 f = np_frame * args.brightness if args.brightness != 1.0 else np_frame
                 if not args.no_dither:
-                    np_frame = dither_to_uint8(f, frames_sent)
+                    np_frame = dither_to_uint8(f, frames_sent,
+                                               period=args.dither_period)
                 else:
                     np_frame = np.clip(f, 0, 255).astype(np.uint8)
                 applied_brightness = 1.0  # already applied above
