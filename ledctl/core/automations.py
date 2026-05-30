@@ -2210,6 +2210,177 @@ class AmbientLavaLamp(ProceduralAnimation):
         return col.astype(np.float32)
 
 
+# --- Noise-based ambient set ----------------------------------------------
+
+class _ValueNoise3D:
+    """Tileable 3D value noise. Sampling the 3rd axis with time gives smooth,
+    seamless animation; the lattice wraps mod L so there are no seams."""
+
+    def __init__(self, L=16, seed=0):
+        self.L = int(L)
+        rng = np.random.default_rng(seed)
+        self.G = rng.random((self.L, self.L, self.L)).astype(np.float32)
+
+    def sample(self, x, y, z):
+        L = self.L
+        xi = np.floor(x); yi = np.floor(y); zi = np.floor(z)
+        xf = (x - xi).astype(np.float32)
+        yf = (y - yi).astype(np.float32)
+        zf = (z - zi).astype(np.float32)
+        u = xf * xf * (3.0 - 2.0 * xf)
+        v = yf * yf * (3.0 - 2.0 * yf)
+        w = zf * zf * (3.0 - 2.0 * zf)
+        x0 = xi.astype(np.int64) % L; x1 = (x0 + 1) % L
+        y0 = yi.astype(np.int64) % L; y1 = (y0 + 1) % L
+        z0 = zi.astype(np.int64) % L; z1 = (z0 + 1) % L
+        G = self.G
+        c000 = G[x0, y0, z0]; c100 = G[x1, y0, z0]
+        c010 = G[x0, y1, z0]; c110 = G[x1, y1, z0]
+        c001 = G[x0, y0, z1]; c101 = G[x1, y0, z1]
+        c011 = G[x0, y1, z1]; c111 = G[x1, y1, z1]
+        x00 = c000 * (1 - u) + c100 * u
+        x10 = c010 * (1 - u) + c110 * u
+        x01 = c001 * (1 - u) + c101 * u
+        x11 = c011 * (1 - u) + c111 * u
+        y0_ = x00 * (1 - v) + x10 * v
+        y1_ = x01 * (1 - v) + x11 * v
+        return (y0_ * (1 - w) + y1_ * w).astype(np.float32)
+
+
+def _fbm(noise, x, y, z, octaves=4, lac=2.0, gain=0.5):
+    """Fractal Brownian motion: sum noise octaves -> organic 0..1 field."""
+    amp, freq, total, norm = 1.0, 1.0, np.zeros_like(x), 0.0
+    for _ in range(octaves):
+        total = total + amp * noise.sample(x * freq, y * freq, z * freq)
+        norm += amp
+        amp *= gain
+        freq *= lac
+    return total / norm
+
+
+class AmbientClouds(ProceduralAnimation):
+    """Soft fractal clouds drifting - dreamy, low-contrast, dusk palette."""
+
+    PALETTE = [(0.00, (10, 15, 50)), (0.40, (60, 40, 120)),
+               (0.70, (200, 90, 140)), (0.90, (255, 180, 120))]
+
+    def __init__(self, width, height, fps=30, speed=1.0, scale=2.0, seed=11):
+        super().__init__(width, height, fps)
+        xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
+        yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
+        self.xn, self.yn = np.meshgrid(xn, yn)
+        self.scale = scale
+        self.speed = speed
+        self.noise = _ValueNoise3D(16, seed)
+        self.lut = _build_palette_lut(self.PALETTE)
+
+    def generate_frame(self, time):
+        t = float(time)
+        z = t * 0.06 * self.speed
+        x = self.xn * self.scale + t * 0.02 * self.speed
+        y = self.yn * self.scale
+        f = _fbm(self.noise, x, y, z, octaves=4)
+        f = np.clip((f - 0.5) * 1.5 + 0.5, 0.0, 1.0)
+        col = _map_lut(self.lut, f)
+        col = _sat_boost(col, 1.25)
+        return (col * (0.55 + 0.45 * f)[..., None]).astype(np.float32)
+
+
+class AmbientCaustics(ProceduralAnimation):
+    """Underwater light caustics - bright shifting veins on deep water."""
+
+    PALETTE = [(0.00, (0, 10, 30)), (0.50, (0, 90, 120)),
+               (0.80, (40, 190, 200)), (1.00, (220, 255, 255))]
+
+    def __init__(self, width, height, fps=30, speed=1.0, scale=2.2, seed=23):
+        super().__init__(width, height, fps)
+        xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
+        yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
+        self.xn, self.yn = np.meshgrid(xn, yn)
+        self.scale = scale
+        self.speed = speed
+        self.noise = _ValueNoise3D(16, seed)
+        self.lut = _build_palette_lut(self.PALETTE)
+
+    def generate_frame(self, time):
+        t = float(time)
+        z = t * 0.08 * self.speed
+        # Warp the sample coords with noise so the veins ripple organically.
+        wx = (_fbm(self.noise, self.xn * 1.3, self.yn * 1.3, z, 2) - 0.5) * 0.6
+        wy = (_fbm(self.noise, self.xn * 1.3 + 5, self.yn * 1.3 + 5, z, 2) - 0.5) * 0.6
+        n = _fbm(self.noise, self.xn * self.scale + wx + t * 0.03,
+                 self.yn * self.scale + wy, z, octaves=3)
+        # Bright thin network where the field crosses its midline.
+        caustic = (1.0 - np.abs(2.0 * n - 1.0)) ** 3
+        col = _map_lut(self.lut, np.clip(caustic, 0.0, 1.0))
+        col = _sat_boost(col, 1.2)
+        return col.astype(np.float32)
+
+
+class AmbientInk(ProceduralAnimation):
+    """Ink diffusing in water - domain-warped tendrils, slow and organic."""
+
+    PALETTE = [(0.00, (4, 2, 16)), (0.40, (50, 10, 90)), (0.65, (150, 25, 140)),
+               (0.85, (70, 90, 210)), (0.95, (235, 220, 255))]
+
+    def __init__(self, width, height, fps=30, speed=1.0, scale=1.8, seed=37):
+        super().__init__(width, height, fps)
+        xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
+        yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
+        self.xn, self.yn = np.meshgrid(xn, yn)
+        self.scale = scale
+        self.speed = speed
+        self.noise = _ValueNoise3D(16, seed)
+        self.lut = _build_palette_lut(self.PALETTE)
+
+    def generate_frame(self, time):
+        t = float(time)
+        z = t * 0.05 * self.speed
+        s = self.scale
+        # Classic domain-warp fBm (warp the input of a warp) -> inky tendrils.
+        q = _fbm(self.noise, self.xn * s, self.yn * s, z, 2)
+        r = _fbm(self.noise, self.xn * s + 3.5 * q + t * 0.02,
+                 self.yn * s + 3.5 * q, z + 0.3, 2)
+        f = _fbm(self.noise, self.xn * s + 3.5 * r, self.yn * s + 3.5 * r, z, 3)
+        # Normalize across the frame so the tendrils use the full range
+        # (domain-warp fBm clusters tightly otherwise -> looked too dim).
+        lo, hi = float(f.min()), float(f.max())
+        f = (f - lo) / max(1e-3, hi - lo)
+        col = _map_lut(self.lut, (f + t * 0.02) % 1.0)
+        col = _sat_boost(col, 1.3)
+        return (col * (0.45 + 0.55 * f)[..., None]).astype(np.float32)
+
+
+class AmbientSmoke(ProceduralAnimation):
+    """Drifting smoke rising and dissipating - cool gray-violet, soft."""
+
+    PALETTE = [(0.00, (8, 8, 14)), (0.45, (60, 55, 80)),
+               (0.70, (130, 120, 155)), (0.90, (215, 205, 230))]
+
+    def __init__(self, width, height, fps=30, speed=1.0, scale=1.6, seed=51):
+        super().__init__(width, height, fps)
+        xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
+        yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
+        self.xn, self.yn = np.meshgrid(xn, yn)
+        self.scale = scale
+        self.speed = speed
+        self.noise = _ValueNoise3D(16, seed)
+        self.lut = _build_palette_lut(self.PALETTE)
+
+    def generate_frame(self, time):
+        t = float(time)
+        z = t * 0.07 * self.speed
+        # Upward drift (smoke rises) + a gentle domain warp.
+        wx = (_fbm(self.noise, self.xn + 9, self.yn + 9, z, 2) - 0.5) * 0.5
+        x = self.xn * self.scale + wx
+        y = self.yn * self.scale + t * 0.14 * self.speed
+        f = _fbm(self.noise, x, y, z, octaves=4)
+        f = np.clip((f - 0.45) * 1.5 + 0.45, 0.0, 1.0)
+        col = _map_lut(self.lut, f)
+        col = _sat_boost(col, 1.15)
+        return (col * (0.45 + 0.55 * f)[..., None]).astype(np.float32)
+
+
 # Registry of available automations
 AUTOMATION_REGISTRY = {
     'color_wave': ColorWave,
@@ -2240,6 +2411,10 @@ AUTOMATION_REGISTRY = {
     'ambient_sweep': AmbientSweep,
     'ambient_bloom': AmbientBloom,
     'ambient_lavalamp': AmbientLavaLamp,
+    'ambient_clouds': AmbientClouds,
+    'ambient_caustics': AmbientCaustics,
+    'ambient_ink': AmbientInk,
+    'ambient_smoke': AmbientSmoke,
 }
 
 
