@@ -2722,7 +2722,15 @@ class SkyCycle(ProceduralAnimation):
         # decorrelates it from the near layer.
         far_cf = _fbm(self.clouds, self.xn * 3.1 + t * 0.035 + 41.0,
                       self.yn * 2.8 + 41.0, t * 0.004, octaves=4)
-        far_op = np.clip((far_cf - 0.56) / 0.24, 0.0, 1.0) * 0.55
+        far_thr = 0.56
+        far_op = np.clip((far_cf - far_thr) / 0.24, 0.0, 1.0) * 0.55
+        # Anti-light halo: the cloud-edge band (just below the threshold)
+        # darkens the sky around clouds, making them pop by contrast.
+        far_halo = np.clip((far_cf - (far_thr - 0.12)) / 0.12, 0.0, 1.0) - \
+            np.clip((far_cf - far_thr) / 0.04, 0.0, 1.0)
+        far_halo = np.clip(far_halo, 0.0, 1.0)
+        frame = frame * (1.0 - far_halo[..., None] * 0.18)
+
         far_col = base * 0.6   # distant clouds are dimmer (atmospheric depth)
         if moon_vis > 0.01:
             # Far clouds get only a faint, wide moon wash (they're behind it).
@@ -2749,6 +2757,13 @@ class SkyCycle(ProceduralAnimation):
                        self.yn * 2.0, t * 0.006, octaves=4)
         cov = 0.52 - 0.10 * storm
         near_op = np.clip((near_cf - cov) / 0.20, 0.0, 1.0)
+        # Anti-light halo on the near layer too. Stronger than the far layer
+        # because near clouds need more local contrast against the sky.
+        near_halo = np.clip((near_cf - (cov - 0.16)) / 0.16, 0.0, 1.0) - \
+            np.clip((near_cf - cov) / 0.04, 0.0, 1.0)
+        near_halo = np.clip(near_halo, 0.0, 1.0)
+        frame = frame * (1.0 - near_halo[..., None] * 0.28)
+
         near_col = np.broadcast_to(
             base, (self.height, self.width, 3)).astype(np.float32).copy()
 

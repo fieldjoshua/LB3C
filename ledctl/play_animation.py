@@ -110,6 +110,12 @@ def main() -> int:
                     help="disable sigma-delta dithering. Dithering is on by "
                          "default and pulls smooth gradients out of the 8-bit "
                          "panel for float-output animations (ambient_*).")
+    ap.add_argument("--dither-strength", type=float, default=1.0, metavar="X",
+                    help="0..1, attenuates the sigma-delta error feedback. "
+                         "1.0 (default) = full dither, exact average, visible "
+                         "per-pixel toggling. 0.5 = half-strength, calmer "
+                         "but slight bias. 0.0 = no dither (banding shows). "
+                         "Try 0.4-0.6 if dithering is too 'shimmery'.")
 
     ap.add_argument("-v", "--verbose", action="store_true")
 
@@ -196,7 +202,9 @@ def main() -> int:
                         sd_err = np.zeros_like(f, dtype=np.float32)
                     target = f + sd_err
                     rounded = np.round(target)
-                    sd_err = (target - rounded).astype(np.float32)
+                    # Attenuate error feedback so dither can be tuned down.
+                    sd_err = ((target - rounded) *
+                              float(args.dither_strength)).astype(np.float32)
                     np_frame = np.clip(rounded, 0, 255).astype(np.uint8)
                 else:
                     np_frame = np.clip(f, 0, 255).astype(np.uint8)
