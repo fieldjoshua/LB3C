@@ -20,6 +20,7 @@ Ctrl-C cleanly clears the strip and disconnects.
 from __future__ import annotations
 
 import argparse
+import inspect
 import logging
 import signal
 import sys
@@ -89,6 +90,14 @@ def main() -> int:
                          "match the strip's physical orientation.")
     ap.add_argument("--duration", type=float, default=None,
                     help="auto-stop after N seconds (default: run until Ctrl-C)")
+    ap.add_argument("--palette", default=None,
+                    help="recolor noise animations with a named palette: "
+                         "cosmic, lava, aurora, colorfield, sky, caustic, ink, "
+                         "smoke, fire, forest, sunset, ice, mono.")
+    ap.add_argument("--warp", type=float, default=None, metavar="X",
+                    help="domain-warp intensity for warp-based noise animations "
+                         "(caustics/ink/smoke/marble/lava/wood). 1.0 = default, "
+                         "higher = more tendrils/distortion.")
 
     # Hardware.
     ap.add_argument("--port", default=None, help="serial port (default: autodetect)")
@@ -125,7 +134,15 @@ def main() -> int:
         return 2
 
     cls = AUTOMATION_REGISTRY[args.name]
-    anim = cls(args.width, args.height, fps=args.fps)
+    # Pass --palette / --warp only to animations whose __init__ accepts them,
+    # so flags are harmless on animations that don't support them.
+    extra = {}
+    sig_params = inspect.signature(cls.__init__).parameters
+    if args.palette is not None and "palette" in sig_params:
+        extra["palette"] = args.palette
+    if args.warp is not None and "warp" in sig_params:
+        extra["warp"] = args.warp
+    anim = cls(args.width, args.height, fps=args.fps, **extra)
 
     count = args.count if args.count is not None else args.width * args.height
     dev = ArduinoSerialDevice({

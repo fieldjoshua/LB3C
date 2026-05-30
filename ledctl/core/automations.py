@@ -2064,6 +2064,44 @@ def _sat_boost(col, amt=1.3):
     return np.clip(gray + (col - gray) * amt, 0.0, 255.0)
 
 
+# Named cyclic palettes - any noise field can be run through any of these
+# via the player's --palette flag.
+NAMED_PALETTES = {
+    'cosmic':     [(0.00, (5, 2, 28)), (0.22, (40, 16, 110)), (0.42, (130, 30, 155)),
+                   (0.60, (225, 60, 140)), (0.80, (70, 60, 190))],
+    'lava':       [(0.00, (8, 0, 0)), (0.20, (95, 8, 0)), (0.42, (205, 30, 0)),
+                   (0.62, (255, 115, 12)), (0.82, (255, 205, 70))],
+    'aurora':     [(0.00, (0, 18, 42)), (0.25, (0, 85, 95)), (0.46, (20, 165, 115)),
+                   (0.66, (125, 225, 155)), (0.84, (205, 120, 175))],
+    'colorfield': [(0.00, (170, 55, 70)), (0.28, (200, 130, 60)),
+                   (0.52, (70, 85, 150)), (0.76, (150, 80, 145))],
+    'sky':        [(0.00, (10, 15, 50)), (0.40, (60, 40, 120)),
+                   (0.70, (200, 90, 140)), (0.90, (255, 180, 120))],
+    'caustic':    [(0.00, (0, 10, 30)), (0.50, (0, 90, 120)),
+                   (0.80, (40, 190, 200)), (1.00, (220, 255, 255))],
+    'ink':        [(0.00, (4, 2, 16)), (0.40, (50, 10, 90)), (0.65, (150, 25, 140)),
+                   (0.85, (70, 90, 210)), (0.95, (235, 220, 255))],
+    'smoke':      [(0.00, (8, 8, 14)), (0.45, (60, 55, 80)),
+                   (0.70, (130, 120, 155)), (0.90, (215, 205, 230))],
+    'fire':       [(0.00, (2, 0, 0)), (0.30, (120, 10, 0)), (0.60, (240, 60, 0)),
+                   (0.80, (255, 170, 30)), (0.95, (255, 240, 180))],
+    'forest':     [(0.00, (2, 15, 8)), (0.40, (20, 80, 30)), (0.70, (120, 180, 60)),
+                   (0.90, (220, 230, 140))],
+    'sunset':     [(0.00, (20, 10, 60)), (0.35, (180, 40, 90)),
+                   (0.60, (255, 110, 60)), (0.85, (255, 200, 110))],
+    'ice':        [(0.00, (4, 10, 30)), (0.40, (20, 90, 140)),
+                   (0.70, (120, 200, 230)), (0.95, (235, 250, 255))],
+    'mono':       [(0.00, (5, 5, 8)), (0.50, (185, 190, 205))],
+}
+
+
+def _resolve_palette(name, default):
+    """Return the named palette's stops, or `default` if name is unknown/None."""
+    if name and name in NAMED_PALETTES:
+        return NAMED_PALETTES[name]
+    return default
+
+
 class AmbientRipples(ProceduralAnimation):
     """Concentric color rings expanding from center - calm, ordered, pond-like."""
 
@@ -2264,7 +2302,8 @@ class AmbientClouds(ProceduralAnimation):
     PALETTE = [(0.00, (10, 15, 50)), (0.40, (60, 40, 120)),
                (0.70, (200, 90, 140)), (0.90, (255, 180, 120))]
 
-    def __init__(self, width, height, fps=30, speed=1.0, scale=2.0, seed=11):
+    def __init__(self, width, height, fps=30, speed=1.0, scale=2.0, seed=11,
+                 palette=None):
         super().__init__(width, height, fps)
         xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
         yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
@@ -2272,7 +2311,7 @@ class AmbientClouds(ProceduralAnimation):
         self.scale = scale
         self.speed = speed
         self.noise = _ValueNoise3D(16, seed)
-        self.lut = _build_palette_lut(self.PALETTE)
+        self.lut = _build_palette_lut(_resolve_palette(palette, self.PALETTE))
 
     def generate_frame(self, time):
         t = float(time)
@@ -2292,22 +2331,25 @@ class AmbientCaustics(ProceduralAnimation):
     PALETTE = [(0.00, (0, 10, 30)), (0.50, (0, 90, 120)),
                (0.80, (40, 190, 200)), (1.00, (220, 255, 255))]
 
-    def __init__(self, width, height, fps=30, speed=1.0, scale=2.2, seed=23):
+    def __init__(self, width, height, fps=30, speed=1.0, scale=2.2, seed=23,
+                 palette=None, warp=1.0):
         super().__init__(width, height, fps)
         xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
         yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
         self.xn, self.yn = np.meshgrid(xn, yn)
         self.scale = scale
         self.speed = speed
+        self.warp = warp
         self.noise = _ValueNoise3D(16, seed)
-        self.lut = _build_palette_lut(self.PALETTE)
+        self.lut = _build_palette_lut(_resolve_palette(palette, self.PALETTE))
 
     def generate_frame(self, time):
         t = float(time)
         z = t * 0.08 * self.speed
         # Warp the sample coords with noise so the veins ripple organically.
-        wx = (_fbm(self.noise, self.xn * 1.3, self.yn * 1.3, z, 2) - 0.5) * 0.6
-        wy = (_fbm(self.noise, self.xn * 1.3 + 5, self.yn * 1.3 + 5, z, 2) - 0.5) * 0.6
+        wa = 0.6 * self.warp
+        wx = (_fbm(self.noise, self.xn * 1.3, self.yn * 1.3, z, 2) - 0.5) * wa
+        wy = (_fbm(self.noise, self.xn * 1.3 + 5, self.yn * 1.3 + 5, z, 2) - 0.5) * wa
         n = _fbm(self.noise, self.xn * self.scale + wx + t * 0.03,
                  self.yn * self.scale + wy, z, octaves=3)
         # Bright thin network where the field crosses its midline.
@@ -2323,25 +2365,28 @@ class AmbientInk(ProceduralAnimation):
     PALETTE = [(0.00, (4, 2, 16)), (0.40, (50, 10, 90)), (0.65, (150, 25, 140)),
                (0.85, (70, 90, 210)), (0.95, (235, 220, 255))]
 
-    def __init__(self, width, height, fps=30, speed=1.0, scale=1.8, seed=37):
+    def __init__(self, width, height, fps=30, speed=1.0, scale=1.8, seed=37,
+                 palette=None, warp=1.0):
         super().__init__(width, height, fps)
         xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
         yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
         self.xn, self.yn = np.meshgrid(xn, yn)
         self.scale = scale
         self.speed = speed
+        self.warp = warp
         self.noise = _ValueNoise3D(16, seed)
-        self.lut = _build_palette_lut(self.PALETTE)
+        self.lut = _build_palette_lut(_resolve_palette(palette, self.PALETTE))
 
     def generate_frame(self, time):
         t = float(time)
         z = t * 0.05 * self.speed
         s = self.scale
+        wa = 3.5 * self.warp
         # Classic domain-warp fBm (warp the input of a warp) -> inky tendrils.
         q = _fbm(self.noise, self.xn * s, self.yn * s, z, 2)
-        r = _fbm(self.noise, self.xn * s + 3.5 * q + t * 0.02,
-                 self.yn * s + 3.5 * q, z + 0.3, 2)
-        f = _fbm(self.noise, self.xn * s + 3.5 * r, self.yn * s + 3.5 * r, z, 3)
+        r = _fbm(self.noise, self.xn * s + wa * q + t * 0.02,
+                 self.yn * s + wa * q, z + 0.3, 2)
+        f = _fbm(self.noise, self.xn * s + wa * r, self.yn * s + wa * r, z, 3)
         # Normalize across the frame so the tendrils use the full range
         # (domain-warp fBm clusters tightly otherwise -> looked too dim).
         lo, hi = float(f.min()), float(f.max())
@@ -2357,7 +2402,8 @@ class AmbientSmoke(ProceduralAnimation):
     PALETTE = [(0.00, (8, 8, 14)), (0.45, (60, 55, 80)),
                (0.70, (130, 120, 155)), (0.90, (215, 205, 230))]
 
-    def __init__(self, width, height, fps=30, speed=1.0, scale=1.6, seed=51):
+    def __init__(self, width, height, fps=30, speed=1.0, scale=1.6, seed=51,
+                 palette=None):
         super().__init__(width, height, fps)
         xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
         yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
@@ -2365,7 +2411,7 @@ class AmbientSmoke(ProceduralAnimation):
         self.scale = scale
         self.speed = speed
         self.noise = _ValueNoise3D(16, seed)
-        self.lut = _build_palette_lut(self.PALETTE)
+        self.lut = _build_palette_lut(_resolve_palette(palette, self.PALETTE))
 
     def generate_frame(self, time):
         t = float(time)
@@ -2379,6 +2425,318 @@ class AmbientSmoke(ProceduralAnimation):
         col = _map_lut(self.lut, f)
         col = _sat_boost(col, 1.15)
         return (col * (0.45 + 0.55 * f)[..., None]).astype(np.float32)
+
+
+class AmbientMarble(ProceduralAnimation):
+    """Marble veining - noise folded through a sine so it reads as stone veins."""
+
+    PALETTE = NAMED_PALETTES['ink']
+
+    def __init__(self, width, height, fps=30, speed=1.0, scale=1.6, seed=61,
+                 palette=None, warp=1.0, veins=4.0):
+        super().__init__(width, height, fps)
+        xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
+        yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
+        self.xn, self.yn = np.meshgrid(xn, yn)
+        self.scale = scale
+        self.speed = speed
+        self.warp = warp
+        self.veins = veins
+        self.noise = _ValueNoise3D(16, seed)
+        self.lut = _build_palette_lut(_resolve_palette(palette, self.PALETTE))
+
+    def generate_frame(self, time):
+        t = float(time)
+        z = t * 0.05 * self.speed
+        turb = _fbm(self.noise, self.xn * self.scale, self.yn * self.scale, z, 4)
+        # Fold: position + turbulence through a sine -> sharp marble veins.
+        f = 0.5 + 0.5 * np.sin(2 * np.pi * (
+            self.xn * self.veins + (turb - 0.5) * 4.0 * self.warp))
+        col = _map_lut(self.lut, f)
+        col = _sat_boost(col, 1.25)
+        return (col * (0.4 + 0.6 * f)[..., None]).astype(np.float32)
+
+
+class AmbientPlasmaNoise(ProceduralAnimation):
+    """High-contrast fractal plasma - vivid, energetic, full-field."""
+
+    PALETTE = NAMED_PALETTES['cosmic']
+
+    def __init__(self, width, height, fps=30, speed=1.0, scale=2.6, seed=71,
+                 palette=None):
+        super().__init__(width, height, fps)
+        xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
+        yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
+        self.xn, self.yn = np.meshgrid(xn, yn)
+        self.scale = scale
+        self.speed = speed
+        self.noise = _ValueNoise3D(16, seed)
+        self.lut = _build_palette_lut(_resolve_palette(palette, self.PALETTE))
+
+    def generate_frame(self, time):
+        t = float(time)
+        z = t * 0.10 * self.speed
+        f = _fbm(self.noise, self.xn * self.scale + t * 0.03,
+                 self.yn * self.scale, z, octaves=5)
+        # Cycle the palette with the field so colors churn -> plasma energy.
+        col = _map_lut(self.lut, (f * 1.6 + t * 0.04) % 1.0)
+        col = _sat_boost(col, 1.35)
+        return (col * (0.55 + 0.45 * f)[..., None]).astype(np.float32)
+
+
+class AmbientFlowingLava(ProceduralAnimation):
+    """Molten flow - bright cracks of lava between dark crust, rising slowly."""
+
+    PALETTE = NAMED_PALETTES['lava']
+
+    def __init__(self, width, height, fps=30, speed=1.0, scale=2.0, seed=83,
+                 palette=None, warp=1.0):
+        super().__init__(width, height, fps)
+        xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
+        yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
+        self.xn, self.yn = np.meshgrid(xn, yn)
+        self.scale = scale
+        self.speed = speed
+        self.warp = warp
+        self.noise = _ValueNoise3D(16, seed)
+        self.lut = _build_palette_lut(_resolve_palette(palette, self.PALETTE))
+
+    def generate_frame(self, time):
+        t = float(time)
+        z = t * 0.05 * self.speed
+        wx = (_fbm(self.noise, self.xn + 3, self.yn + 3, z, 2) - 0.5) * 0.5 * self.warp
+        n = _fbm(self.noise, self.xn * self.scale + wx,
+                 self.yn * self.scale + t * 0.10 * self.speed, z, octaves=3)
+        # Ridged: bright thin cracks where the field crosses its midline.
+        crust = np.abs(2.0 * n - 1.0)
+        glow = (1.0 - crust) ** 2  # bright in the cracks
+        # Map base noise to lava color, then push brightness into the cracks.
+        col = _map_lut(self.lut, np.clip(n * 0.7 + glow * 0.5, 0.0, 1.0))
+        col = _sat_boost(col, 1.25)
+        return (col * (0.25 + 0.75 * glow)[..., None]).astype(np.float32)
+
+
+class AmbientNebula(ProceduralAnimation):
+    """Fractal nebula clouds with a scatter of slow-twinkling stars."""
+
+    PALETTE = NAMED_PALETTES['cosmic']
+
+    def __init__(self, width, height, fps=30, speed=1.0, scale=2.2, seed=97,
+                 palette=None, num_stars=10):
+        super().__init__(width, height, fps)
+        xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
+        yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
+        self.xn, self.yn = np.meshgrid(xn, yn)
+        self.iyy, self.ixx = np.meshgrid(np.arange(width, dtype=np.float32),
+                                         np.arange(height, dtype=np.float32),
+                                         indexing='ij')
+        self.scale = scale
+        self.speed = speed
+        self.noise = _ValueNoise3D(16, seed)
+        self.lut = _build_palette_lut(_resolve_palette(palette, self.PALETTE))
+        # Deterministic star field (coherent positions, not re-rolled).
+        rng = np.random.default_rng(seed)
+        self.n_stars = int(num_stars)
+        self.sx = rng.uniform(0, width, self.n_stars).astype(np.float32)
+        self.sy = rng.uniform(0, height, self.n_stars).astype(np.float32)
+        self.sphase = rng.uniform(0, 2 * np.pi, self.n_stars).astype(np.float32)
+        self.srate = rng.uniform(0.6, 1.8, self.n_stars).astype(np.float32)
+        xx, yy = np.meshgrid(np.arange(width, dtype=np.float32),
+                             np.arange(height, dtype=np.float32))
+        self.xx, self.yy = xx, yy
+
+    def generate_frame(self, time):
+        t = float(time)
+        z = t * 0.05 * self.speed
+        f = _fbm(self.noise, self.xn * self.scale + t * 0.015,
+                 self.yn * self.scale, z, octaves=4)
+        f = np.clip((f - 0.5) * 1.4 + 0.5, 0.0, 1.0)
+        col = _map_lut(self.lut, f)
+        col = _sat_boost(col, 1.3)
+        out = col * (0.45 + 0.55 * f)[..., None]
+        # Add slow-twinkling stars on top.
+        for i in range(self.n_stars):
+            tw = 0.5 + 0.5 * np.sin(t * self.srate[i] + self.sphase[i])
+            if tw < 0.35:
+                continue
+            d2 = (self.xx - self.sx[i]) ** 2 + (self.yy - self.sy[i]) ** 2
+            g = (200.0 * tw) * np.exp(-d2 / (2.0 * 0.55 ** 2))
+            out[..., 0] += g
+            out[..., 1] += g
+            out[..., 2] += g * 0.95
+        return np.clip(out, 0.0, 255.0).astype(np.float32)
+
+
+class AmbientWood(ProceduralAnimation):
+    """Wood-grain rings - concentric grain distorted by noise. Warm, organic."""
+
+    PALETTE = [(0.00, (40, 18, 6)), (0.45, (110, 55, 20)),
+               (0.72, (170, 100, 45)), (0.92, (210, 150, 90))]
+
+    def __init__(self, width, height, fps=30, speed=1.0, rings=5.0, seed=103,
+                 palette=None, warp=1.0):
+        super().__init__(width, height, fps)
+        xn = np.linspace(-0.5, 0.5, width, dtype=np.float32)
+        yn = np.linspace(-0.5, 0.5, height, dtype=np.float32)
+        self.xn, self.yn = np.meshgrid(xn, yn)
+        self.r = np.sqrt(self.xn ** 2 + (self.yn * 1.6) ** 2)
+        self.rings = rings
+        self.speed = speed
+        self.warp = warp
+        self.noise = _ValueNoise3D(16, seed)
+        self.lut = _build_palette_lut(_resolve_palette(palette, self.PALETTE))
+
+    def generate_frame(self, time):
+        t = float(time)
+        z = t * 0.03 * self.speed
+        n = _fbm(self.noise, (self.xn + 0.5) * 2.0, (self.yn + 0.5) * 2.0, z, 3)
+        grain = (self.r * self.rings + (n - 0.5) * 1.2 * self.warp) % 1.0
+        f = 0.5 + 0.5 * np.sin(2 * np.pi * grain)
+        col = _map_lut(self.lut, f)
+        col = _sat_boost(col, 1.15)
+        return (col * (0.5 + 0.5 * f)[..., None]).astype(np.float32)
+
+
+class SkyCycle(ProceduralAnimation):
+    """A full sky cycle: bright day with passing clouds -> sunset -> night with
+    a full moon the clouds drift across and distort -> clouds accumulate, darken
+    and flash with lightning -> loops back to dawn.
+
+    Everything is soft, low-frequency atmosphere meant for a diffuser. One long
+    deterministic timeline (default ~150s) driven by coherent noise.
+    """
+
+    # Sky gradient keyframes: (phase, top_rgb, bottom_rgb). Cyclic.
+    SKY_KEYS = [
+        (0.00, (60, 140, 235), (155, 205, 255)),   # bright day
+        (0.26, (45, 90, 180), (210, 220, 235)),    # midday hazing
+        (0.40, (40, 30, 95), (255, 125, 60)),      # sunset
+        (0.52, (18, 18, 55), (120, 50, 90)),       # dusk
+        (0.64, (4, 6, 26), (12, 16, 48)),          # night
+        (0.80, (3, 5, 20), (10, 14, 40)),          # deep night (moon)
+        (0.90, (10, 10, 18), (26, 26, 40)),        # storm gathering
+        (1.00, (60, 140, 235), (155, 205, 255)),   # back to day
+    ]
+
+    def __init__(self, width, height, fps=30, duration=150.0, seed=7):
+        super().__init__(width, height, fps)
+        self.duration = float(duration)
+        xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
+        yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
+        self.xn, self.yn = np.meshgrid(xn, yn)
+        self.xx, self.yy = np.meshgrid(np.arange(width, dtype=np.float32),
+                                       np.arange(height, dtype=np.float32))
+        self.clouds = _ValueNoise3D(16, seed)
+        # Moon position (upper area).
+        self.moon_x = (width - 1) * 0.5
+        self.moon_y = (height - 1) * 0.30
+        # Deterministic lightning schedule in the storm window (phase 0.88..1.0).
+        rng = np.random.default_rng(seed + 1)
+        n_flash = 7
+        self.flash_t = np.sort(rng.uniform(0.88, 0.995, n_flash)).astype(np.float32)
+        self.flash_x = rng.uniform(0.2, 0.8, n_flash).astype(np.float32)
+
+    @staticmethod
+    def _interp_keys(keys, x):
+        # keys sorted by phase, cyclic over [0,1). Returns (top, bottom) arrays.
+        for i in range(len(keys) - 1):
+            p0, t0, b0 = keys[i]
+            p1, t1, b1 = keys[i + 1]
+            if p0 <= x <= p1:
+                f = (x - p0) / max(1e-6, p1 - p0)
+                top = np.array(t0) * (1 - f) + np.array(t1) * f
+                bot = np.array(b0) * (1 - f) + np.array(b1) * f
+                return top, bot
+        return np.array(keys[-1][1]), np.array(keys[-1][2])
+
+    def generate_frame(self, time):
+        t = float(time)
+        ph = (t / self.duration) % 1.0
+        H, W = self.height, self.width
+
+        # --- Sky vertical gradient ---
+        top, bot = self._interp_keys(self.SKY_KEYS, ph)
+        vy = self.yn[..., None]  # 0 (top) .. 1 (bottom)
+        sky = top * (1.0 - vy) + bot * vy
+        frame = sky.astype(np.float32)
+
+        # --- Phase factors ---
+        def win(a, b, x):
+            # smooth 0..1 ramp that is 1 inside [a,b], soft edges
+            return float(np.clip(min((x - a), (b - x)) / 0.05 + 1.0, 0.0, 1.0))
+        night = float(np.clip((ph - 0.55) / 0.09, 0.0, 1.0)) * \
+            float(np.clip((1.02 - ph) / 0.05, 0.0, 1.0))
+        storm = float(np.clip((ph - 0.86) / 0.04, 0.0, 1.0))
+        moon_vis = float(np.clip((ph - 0.56) / 0.08, 0.0, 1.0)) * \
+            float(np.clip((0.93 - ph) / 0.05, 0.0, 1.0))
+
+        # --- Clouds: drifting fractal field ---
+        z = t * 0.04
+        cfield = _fbm(self.clouds, self.xn * 2.2 + t * 0.05,
+                      self.yn * 2.0, z, octaves=4)
+        # Coverage threshold drops as the storm gathers -> more cloud.
+        cov = 0.58 - 0.30 * storm
+        op = np.clip((cfield - cov) / 0.22, 0.0, 1.0)  # cloud opacity 0..1
+
+        # --- Moon (behind clouds) ---
+        if moon_vis > 0.01:
+            # Cloud field gently lenses the moon position (distortion).
+            grad = (cfield - 0.5)
+            mx = self.moon_x + grad * 1.2
+            my = self.moon_y + grad * 1.2
+            d2 = (self.xx - mx) ** 2 + (self.yy - my) ** 2
+            disc = np.exp(-d2 / (2.0 * 1.1 ** 2))
+            halo = np.exp(-d2 / (2.0 * 2.6 ** 2)) * 0.4
+            moon = (disc + halo) * (235.0 * moon_vis)
+            frame[..., 0] += moon
+            frame[..., 1] += moon
+            frame[..., 2] += moon * 0.92
+
+        # --- Cloud color depends on phase ---
+        # day: bright white; sunset: warm; night: cool gray; storm: dark.
+        day_c = np.array([245, 248, 255])
+        sun_c = np.array([255, 170, 120])
+        night_c = np.array([120, 130, 160])
+        storm_c = np.array([35, 35, 50])
+        if ph < 0.34:
+            cloud_col = day_c
+        elif ph < 0.5:
+            f = (ph - 0.34) / 0.16
+            cloud_col = day_c * (1 - f) + sun_c * f
+        elif ph < 0.64:
+            f = (ph - 0.5) / 0.14
+            cloud_col = sun_c * (1 - f) + night_c * f
+        else:
+            cloud_col = night_c * (1 - storm) + storm_c * storm
+        cloud_col = cloud_col.astype(np.float32)
+
+        # Composite clouds over sky+moon (clouds occlude the moon -> distortion).
+        op3 = op[..., None]
+        frame = frame * (1.0 - 0.92 * op3) + cloud_col * op3
+
+        # --- Lightning during the storm ---
+        if storm > 0.05:
+            flash = 0.0
+            bolt_x = 0.5
+            for ft, fx in zip(self.flash_t, self.flash_x):
+                dt = ph - ft
+                if 0.0 <= dt < 0.02:
+                    # sharp multi-flicker envelope decaying over ~0.02 phase
+                    env = np.exp(-dt / 0.004) * (0.6 + 0.4 * np.sin(dt * 1800))
+                    if env > flash:
+                        flash = env
+                        bolt_x = fx
+            if flash > 0.01:
+                amount = flash * storm
+                # Brighten the whole scene (cloud-lit flash)...
+                frame += np.array([180, 195, 255], np.float32) * (amount * 0.7)
+                # ...plus a brighter vertical column where the bolt strikes.
+                col_x = bolt_x * (W - 1)
+                colmask = np.exp(-((self.xx - col_x) ** 2) / (2.0 * 0.9 ** 2))
+                frame += np.array([220, 230, 255], np.float32) * \
+                    (colmask[..., None] * amount * 1.4)
+
+        return np.clip(frame, 0.0, 255.0).astype(np.float32)
 
 
 # Registry of available automations
@@ -2415,6 +2773,12 @@ AUTOMATION_REGISTRY = {
     'ambient_caustics': AmbientCaustics,
     'ambient_ink': AmbientInk,
     'ambient_smoke': AmbientSmoke,
+    'ambient_marble': AmbientMarble,
+    'ambient_plasma_noise': AmbientPlasmaNoise,
+    'ambient_flowing_lava': AmbientFlowingLava,
+    'ambient_nebula': AmbientNebula,
+    'ambient_wood': AmbientWood,
+    'sky_cycle': SkyCycle,
 }
 
 
