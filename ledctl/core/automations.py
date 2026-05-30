@@ -1874,6 +1874,155 @@ class FlagMashup(ProceduralAnimation):
         return np.clip(frame, 0.0, 255.0).astype(np.uint8)
 
 
+class AmbientField(ProceduralAnimation):
+    """Slow flowing color-field engine for a 10x10 strip behind a diffuser.
+
+    Purpose-built for diffused ambient light, NOT pixel-precise imagery:
+
+      - Everything is low spatial frequency (features span several LEDs),
+        because the diffuser blurs anything finer into mush anyway.
+      - Motion is slow and organic (advection + domain warp).
+      - Color carries the piece; the palette is the design.
+      - Outputs float32 (sub-8-bit color) so the player's dithering can
+        pull smooth gradients out of the panel's 8-bit channels.
+
+    Subclass and set MOOD to pick a palette + motion preset.
+    """
+
+    MOOD = 'cosmic'
+
+    # Cyclic palettes: (position 0..1, (r, g, b) 0..255). Designed to look
+    # good at any field value and to wrap (last stop blends back to first).
+    PALETTES = {
+        'cosmic': [
+            (0.00, (5, 2, 28)),
+            (0.22, (40, 16, 110)),
+            (0.42, (130, 30, 155)),
+            (0.60, (225, 60, 140)),
+            (0.80, (70, 60, 190)),
+        ],
+        'lava': [
+            (0.00, (8, 0, 0)),
+            (0.20, (95, 8, 0)),
+            (0.42, (205, 30, 0)),
+            (0.62, (255, 115, 12)),
+            (0.82, (255, 205, 70)),
+        ],
+        'aurora': [
+            (0.00, (0, 18, 42)),
+            (0.25, (0, 85, 95)),
+            (0.46, (20, 165, 115)),
+            (0.66, (125, 225, 155)),
+            (0.84, (205, 120, 175)),
+        ],
+        'color_field': [
+            (0.00, (170, 55, 70)),
+            (0.28, (200, 130, 60)),
+            (0.52, (70, 85, 150)),
+            (0.76, (150, 80, 145)),
+        ],
+    }
+
+    # Per-mood motion: spatial frequencies (low = big features), domain-warp
+    # amount, time-speed, flow bias (vx, vy in field-units/sec), and a
+    # brightness floor so the field never goes fully dark.
+    MOODS = {
+        'cosmic':      dict(fx=1.6, fy=1.8, fd=1.2, warp=0.22, speed=1.0,
+                            flow=(0.02, -0.015), vfloor=0.45),
+        'lava':        dict(fx=1.4, fy=1.7, fd=1.3, warp=0.30, speed=0.8,
+                            flow=(0.0, -0.06), vfloor=0.35),
+        'aurora':      dict(fx=1.3, fy=1.0, fd=1.1, warp=0.18, speed=0.9,
+                            flow=(0.05, 0.0), vfloor=0.40),
+        'color_field': dict(fx=0.8, fy=0.9, fd=0.6, warp=0.10, speed=0.45,
+                            flow=(0.01, 0.008), vfloor=0.55),
+    }
+
+    def __init__(self, width, height, fps=30, mood=None, speed=1.0, lut_n=512):
+        super().__init__(width, height, fps)
+        self.mood = mood or self.MOOD
+        m = self.MOODS[self.mood]
+        self.fx, self.fy, self.fd = m['fx'], m['fy'], m['fd']
+        self.warp = m['warp']
+        self.base_speed = m['speed'] * speed
+        self.flow = m['flow']
+        self.vfloor = m['vfloor']
+        xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
+        yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
+        self.xn, self.yn = np.meshgrid(xn, yn)
+        self.lut_n = lut_n
+        self.lut = self._build_lut(self.PALETTES[self.mood], lut_n)
+
+    @staticmethod
+    def _build_lut(stops, n):
+        stops = sorted(stops)
+        pos = np.array([p for p, _ in stops] + [1.0 + stops[0][0]],
+                       dtype=np.float64)
+        lut = np.zeros((n, 3), dtype=np.float32)
+        q = np.linspace(0.0, 1.0, n, endpoint=False)
+        for ch in range(3):
+            vals = np.array([c[ch] for _, c in stops] + [stops[0][1][ch]],
+                            dtype=np.float64)
+            lut[:, ch] = np.interp(q, pos, vals).astype(np.float32)
+        return lut
+
+    def _fields(self, t):
+        s = self.base_speed
+        fx_, fy_ = self.flow
+        # Advect (slow flow) + domain-warp for organic, non-repeating motion.
+        x = self.xn + fx_ * t
+        y = self.yn + fy_ * t
+        wx = self.warp * np.sin(2 * np.pi * (self.yn * 0.9) + t * 0.13 * s)
+        wy = self.warp * np.cos(2 * np.pi * (self.xn * 0.9) + t * 0.11 * s)
+        xx = x + wx
+        yy = y + wy
+        # Color field: 3 low-frequency waves -> 0..1.
+        a = np.sin(2 * np.pi * (xx * self.fx) + t * 0.05 * s)
+        b = np.sin(2 * np.pi * (yy * self.fy) - t * 0.043 * s)
+        c = np.sin(2 * np.pi * ((xx + yy) * self.fd) + t * 0.031 * s)
+        color_f = 0.5 + 0.5 * ((a + b + c) / 3.0)
+        # Brightness field: different slow combo -> vfloor..1 (gives depth).
+        d = np.sin(2 * np.pi * (xx * 0.7) - t * 0.027 * s)
+        e = np.sin(2 * np.pi * (yy * 0.6) + t * 0.019 * s)
+        bright_f = 0.5 + 0.5 * (0.5 * (d + e))
+        bright_f = self.vfloor + (1.0 - self.vfloor) * bright_f
+        return color_f.astype(np.float32), bright_f.astype(np.float32)
+
+    def generate_frame(self, time):
+        t = float(time)
+        color_f, bright_f = self._fields(t)
+        breathe = 0.88 + 0.12 * np.sin(t * 0.08 * self.base_speed)
+        # Map color field through the palette LUT with linear interpolation
+        # (continuous color = no stepping before dithering even gets a turn).
+        fp = color_f * self.lut_n
+        i0 = np.floor(fp).astype(np.int32) % self.lut_n
+        frac = (fp - np.floor(fp)).astype(np.float32)[..., None]
+        i1 = (i0 + 1) % self.lut_n
+        col = self.lut[i0] * (1.0 - frac) + self.lut[i1] * frac
+        out = col * (bright_f[..., None] * breathe)
+        # Return float32 (0..255) so the player can dither for smoothness.
+        return out.astype(np.float32)
+
+
+class AmbientCosmic(AmbientField):
+    """Ambient cosmic nebula - slow indigo/violet/magenta/cyan flow."""
+    MOOD = 'cosmic'
+
+
+class AmbientLava(AmbientField):
+    """Ambient liquid lava - warm molten amber/crimson/gold morphing."""
+    MOOD = 'lava'
+
+
+class AmbientAurora(AmbientField):
+    """Ambient aurora/tides - flowing teal/green/blue with pink edges."""
+    MOOD = 'aurora'
+
+
+class AmbientColorField(AmbientField):
+    """Ambient color-field - Rothko-style slow breathing color washes."""
+    MOOD = 'color_field'
+
+
 # Registry of available automations
 AUTOMATION_REGISTRY = {
     'color_wave': ColorWave,
@@ -1895,6 +2044,10 @@ AUTOMATION_REGISTRY = {
     'cosmic_drift': CosmicDrift,
     'fireworks_show': FireworksShow,
     'flag_mashup': FlagMashup,
+    'ambient_cosmic': AmbientCosmic,
+    'ambient_lava': AmbientLava,
+    'ambient_aurora': AmbientAurora,
+    'ambient_field': AmbientColorField,
 }
 
 

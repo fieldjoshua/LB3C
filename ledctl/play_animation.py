@@ -43,6 +43,37 @@ def list_animations() -> None:
         print(f"  {name:18s}  {summary}")
 
 
+# 8x8 ordered (Bayer) dither matrix, normalized to [0, 1).
+_BAYER8 = np.array([
+    [0, 48, 12, 60, 3, 51, 15, 63],
+    [32, 16, 44, 28, 35, 19, 47, 31],
+    [8, 56, 4, 52, 11, 59, 7, 55],
+    [40, 24, 36, 20, 43, 27, 39, 23],
+    [2, 50, 14, 62, 1, 49, 13, 61],
+    [34, 18, 46, 30, 33, 17, 45, 29],
+    [10, 58, 6, 54, 9, 57, 5, 53],
+    [42, 26, 38, 22, 41, 25, 37, 21],
+], dtype=np.float32) / 64.0
+
+
+def dither_to_uint8(frame_float: np.ndarray, frame_idx: int) -> np.ndarray:
+    """Ordered-dither a float (0..255) frame down to uint8.
+
+    Spatial: an 8x8 Bayer threshold pushes sub-LSB fractions stochastically
+    across the rounding boundary, so a value of e.g. 10.3 lands on 11 in
+    ~30% of pixels and 10 in the rest -> averages to 10.3.
+
+    Temporal: the pattern shifts every frame so the dither moves; the eye
+    and the diffuser integrate it, yielding apparent >8-bit smoothness.
+    """
+    H, W, _ = frame_float.shape
+    b = np.roll(_BAYER8, ((frame_idx * 3) % 8, (frame_idx * 5) % 8), axis=(0, 1))
+    reps_y, reps_x = (H + 7) // 8, (W + 7) // 8
+    thr = np.tile(b, (reps_y, reps_x))[:H, :W][..., None]  # 0..1
+    out = np.floor(frame_float + thr)
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
 def frame_to_rgb_list(
     frame: np.ndarray, brightness: float
 ) -> List[Tuple[int, int, int]]:
@@ -84,6 +115,11 @@ def main() -> int:
     ap.add_argument("--order", default="GRB", help="strip color order")
     ap.add_argument("--layout", default="serpentine",
                     choices=["serpentine", "linear"])
+
+    ap.add_argument("--no-dither", action="store_true",
+                    help="disable temporal+spatial dithering. Dithering is "
+                         "on by default and gives smooth gradients out of the "
+                         "8-bit panel for float-output animations (ambient_*).")
 
     ap.add_argument("-v", "--verbose", action="store_true")
 
@@ -148,12 +184,24 @@ def main() -> int:
             anim_t = (now - t0) * args.speed
             np_frame = anim.generate_frame(anim_t)
 
+            # Float-output animations (ambient_*) carry sub-8-bit color.
+            # Apply brightness in float, then dither down to uint8 so the
+            # gradients stay smooth instead of banding.
+            applied_brightness = args.brightness
+            if np.issubdtype(np_frame.dtype, np.floating):
+                f = np_frame * args.brightness if args.brightness != 1.0 else np_frame
+                if not args.no_dither:
+                    np_frame = dither_to_uint8(f, frames_sent)
+                else:
+                    np_frame = np.clip(f, 0, 255).astype(np.uint8)
+                applied_brightness = 1.0  # already applied above
+
             if args.rotate:
                 # numpy rot90 is counter-clockwise; negate k for clockwise.
                 k_cw = {90: -1, 180: -2, 270: -3}[args.rotate]
                 np_frame = np.rot90(np_frame, k=k_cw).copy()
 
-            rgb_data = frame_to_rgb_list(np_frame, args.brightness)
+            rgb_data = frame_to_rgb_list(np_frame, applied_brightness)
             # After a 90/270 rotation the raster is (W, H) not (H, W).
             if args.rotate in (90, 270):
                 dev.draw_rgb_frame(args.height, args.width, rgb_data)
