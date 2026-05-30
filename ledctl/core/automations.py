@@ -2598,24 +2598,35 @@ class AmbientWood(ProceduralAnimation):
 
 
 class SkyCycle(ProceduralAnimation):
-    """A full sky cycle: bright day with passing clouds -> sunset -> night with
-    a full moon the clouds drift across and distort -> clouds accumulate, darken
-    and flash with lightning -> loops back to dawn.
+    """Day -> sunset -> night -> storm -> dawn, ~150s loop.
 
-    Everything is soft, low-frequency atmosphere meant for a diffuser. One long
-    deterministic timeline (default ~150s) driven by coherent noise.
+    Design rules (per the user):
+      - Sky is plain dark blue and just DARKENS through the cycle; it goes
+        full BLACK at night. The sky never takes on sunset color.
+      - The CLOUDS carry all the color: bright-white in day, warm sunset
+        oranges/pinks at sunset, dim violet at dusk, dark gray at night,
+        nearly black during the storm.
+      - The moon is SMALL but bright, only visible at night.
+      - Clouds get illuminated by moonlight when they're close to the moon
+        and stay dark when far from it. So as a cloud drifts across the
+        moon you watch its near-moon edges glow, then dim as it moves on.
+        Clouds that cover the moon also occlude it (the cloud opacity
+        blends over the moon disc).
+      - Storm window: cloud coverage ramps up, clouds darken, deterministic
+        lightning flashes punctuate the dark.
     """
 
-    # Sky gradient keyframes: (phase, top_rgb, bottom_rgb). Cyclic.
+    # Sky color per phase. Sky-only luminance, no warm colors -
+    # any "sunset" color appears on the clouds, not on this gradient.
     SKY_KEYS = [
-        (0.00, (60, 140, 235), (155, 205, 255)),   # bright day
-        (0.26, (45, 90, 180), (210, 220, 235)),    # midday hazing
-        (0.40, (40, 30, 95), (255, 125, 60)),      # sunset
-        (0.52, (18, 18, 55), (120, 50, 90)),       # dusk
-        (0.64, (4, 6, 26), (12, 16, 48)),          # night
-        (0.80, (3, 5, 20), (10, 14, 40)),          # deep night (moon)
-        (0.90, (10, 10, 18), (26, 26, 40)),        # storm gathering
-        (1.00, (60, 140, 235), (155, 205, 255)),   # back to day
+        (0.00, (12, 28, 75)),   # dark blue day
+        (0.30, (10, 24, 65)),   # day, very slight dim
+        (0.45, (6, 14, 38)),    # dusk: sky just gets darker
+        (0.58, (2, 5, 18)),     # almost black
+        (0.66, (0, 0, 0)),      # BLACK night
+        (0.86, (0, 0, 0)),      # still black going into storm
+        (0.94, (3, 4, 12)),     # pre-dawn shadow
+        (1.00, (12, 28, 75)),   # back to day
     ]
 
     def __init__(self, width, height, fps=30, duration=150.0, seed=7):
@@ -2627,113 +2638,133 @@ class SkyCycle(ProceduralAnimation):
         self.xx, self.yy = np.meshgrid(np.arange(width, dtype=np.float32),
                                        np.arange(height, dtype=np.float32))
         self.clouds = _ValueNoise3D(16, seed)
-        # Moon position (upper area).
-        self.moon_x = (width - 1) * 0.5
+        # Small moon up and slightly left of center.
+        self.moon_x = (width - 1) * 0.45
         self.moon_y = (height - 1) * 0.30
-        # Deterministic lightning schedule in the storm window (phase 0.88..1.0).
+        # Moon size: smaller-but-bright. Sigma ~0.55 LED -> ~1 bright LED
+        # with a hint of glow on its immediate neighbors.
+        self.moon_sigma = max(0.45, min(width, height) * 0.05)
+        # Moonlight reach: how far moonlight illuminates clouds (in LEDs).
+        self.moon_reach = max(2.0, min(width, height) * 0.30)
+        # Deterministic lightning schedule (phase positions in the storm).
         rng = np.random.default_rng(seed + 1)
         n_flash = 7
-        self.flash_t = np.sort(rng.uniform(0.88, 0.995, n_flash)).astype(np.float32)
+        self.flash_t = np.sort(rng.uniform(0.86, 0.99, n_flash)).astype(np.float32)
         self.flash_x = rng.uniform(0.2, 0.8, n_flash).astype(np.float32)
 
     @staticmethod
-    def _interp_keys(keys, x):
-        # keys sorted by phase, cyclic over [0,1). Returns (top, bottom) arrays.
+    def _interp_color(keys, x):
+        """Cyclic interp through (phase, rgb) keypoints."""
         for i in range(len(keys) - 1):
-            p0, t0, b0 = keys[i]
-            p1, t1, b1 = keys[i + 1]
+            p0, c0 = keys[i]
+            p1, c1 = keys[i + 1]
             if p0 <= x <= p1:
                 f = (x - p0) / max(1e-6, p1 - p0)
-                top = np.array(t0) * (1 - f) + np.array(t1) * f
-                bot = np.array(b0) * (1 - f) + np.array(b1) * f
-                return top, bot
-        return np.array(keys[-1][1]), np.array(keys[-1][2])
+                return np.array(c0, np.float32) * (1 - f) + \
+                       np.array(c1, np.float32) * f
+        return np.array(keys[-1][1], np.float32)
+
+    def _base_cloud_color(self, ph):
+        """Cloud base color per phase. Cloud color is where the sunset lives."""
+        # Anchor colors.
+        day = np.array([240, 245, 255], np.float32)     # bright white day cloud
+        sunset = np.array([255, 130, 75], np.float32)   # warm orange/pink sunset
+        dusk = np.array([90, 50, 110], np.float32)      # dim violet
+        night = np.array([10, 12, 22], np.float32)      # dark gray-black
+        storm = np.array([6, 6, 12], np.float32)        # near-black storm cloud
+        # Phase blends.
+        if ph < 0.28:
+            return day
+        if ph < 0.42:
+            f = (ph - 0.28) / 0.14
+            return day * (1 - f) + sunset * f
+        if ph < 0.52:
+            f = (ph - 0.42) / 0.10
+            return sunset * (1 - f) + dusk * f
+        if ph < 0.62:
+            f = (ph - 0.52) / 0.10
+            return dusk * (1 - f) + night * f
+        if ph < 0.84:
+            return night
+        if ph < 0.96:
+            f = (ph - 0.84) / 0.12
+            return night * (1 - f) + storm * f
+        # 0.96..1.0 -> rapidly back to day
+        f = (ph - 0.96) / 0.04
+        return storm * (1 - f) + day * f
 
     def generate_frame(self, time):
         t = float(time)
         ph = (t / self.duration) % 1.0
-        H, W = self.height, self.width
 
-        # --- Sky vertical gradient ---
-        top, bot = self._interp_keys(self.SKY_KEYS, ph)
-        vy = self.yn[..., None]  # 0 (top) .. 1 (bottom)
-        sky = top * (1.0 - vy) + bot * vy
-        frame = sky.astype(np.float32)
+        # --- 1. Sky (uniform, no gradient; just darkens with phase) ---
+        sky_rgb = self._interp_color(self.SKY_KEYS, ph)
+        frame = np.broadcast_to(sky_rgb, (self.height, self.width, 3)).astype(np.float32).copy()
 
-        # --- Phase factors ---
-        def win(a, b, x):
-            # smooth 0..1 ramp that is 1 inside [a,b], soft edges
-            return float(np.clip(min((x - a), (b - x)) / 0.05 + 1.0, 0.0, 1.0))
-        night = float(np.clip((ph - 0.55) / 0.09, 0.0, 1.0)) * \
-            float(np.clip((1.02 - ph) / 0.05, 0.0, 1.0))
-        storm = float(np.clip((ph - 0.86) / 0.04, 0.0, 1.0))
-        moon_vis = float(np.clip((ph - 0.56) / 0.08, 0.0, 1.0)) * \
-            float(np.clip((0.93 - ph) / 0.05, 0.0, 1.0))
+        # --- 2. Phase factors ---
+        moon_vis = float(np.clip((ph - 0.56) / 0.06, 0.0, 1.0)) * \
+            float(np.clip((0.92 - ph) / 0.04, 0.0, 1.0))
+        storm = float(np.clip((ph - 0.84) / 0.04, 0.0, 1.0)) * \
+            float(np.clip((0.99 - ph) / 0.03, 0.0, 1.0))
 
-        # --- Clouds: drifting fractal field ---
+        # --- 3. Clouds: drifting fractal field + opacity ---
         z = t * 0.04
         cfield = _fbm(self.clouds, self.xn * 2.2 + t * 0.05,
                       self.yn * 2.0, z, octaves=4)
-        # Coverage threshold drops as the storm gathers -> more cloud.
-        cov = 0.58 - 0.30 * storm
-        op = np.clip((cfield - cov) / 0.22, 0.0, 1.0)  # cloud opacity 0..1
+        # Coverage threshold: storm makes the sky cloudier.
+        cov = 0.55 - 0.32 * storm
+        op = np.clip((cfield - cov) / 0.20, 0.0, 1.0)
 
-        # --- Moon (behind clouds) ---
+        # --- 4. Moon (small, bright). Drawn on the sky BEFORE clouds so
+        #         opaque clouds occlude it.
         if moon_vis > 0.01:
-            # Cloud field gently lenses the moon position (distortion).
-            grad = (cfield - 0.5)
-            mx = self.moon_x + grad * 1.2
-            my = self.moon_y + grad * 1.2
-            d2 = (self.xx - mx) ** 2 + (self.yy - my) ** 2
-            disc = np.exp(-d2 / (2.0 * 1.1 ** 2))
-            halo = np.exp(-d2 / (2.0 * 2.6 ** 2)) * 0.4
-            moon = (disc + halo) * (235.0 * moon_vis)
-            frame[..., 0] += moon
-            frame[..., 1] += moon
-            frame[..., 2] += moon * 0.92
-
-        # --- Cloud color depends on phase ---
-        # day: bright white; sunset: warm; night: cool gray; storm: dark.
-        day_c = np.array([245, 248, 255])
-        sun_c = np.array([255, 170, 120])
-        night_c = np.array([120, 130, 160])
-        storm_c = np.array([35, 35, 50])
-        if ph < 0.34:
-            cloud_col = day_c
-        elif ph < 0.5:
-            f = (ph - 0.34) / 0.16
-            cloud_col = day_c * (1 - f) + sun_c * f
-        elif ph < 0.64:
-            f = (ph - 0.5) / 0.14
-            cloud_col = sun_c * (1 - f) + night_c * f
+            d2_m = (self.xx - self.moon_x) ** 2 + (self.yy - self.moon_y) ** 2
+            disc = np.exp(-d2_m / (2.0 * self.moon_sigma ** 2))
+            tiny_halo = np.exp(-d2_m / (2.0 * (self.moon_sigma * 2.0) ** 2)) * 0.25
+            moon_lum = (disc + tiny_halo) * (255.0 * moon_vis)
+            frame[..., 0] += moon_lum
+            frame[..., 1] += moon_lum
+            frame[..., 2] += moon_lum * 0.97
         else:
-            cloud_col = night_c * (1 - storm) + storm_c * storm
-        cloud_col = cloud_col.astype(np.float32)
+            d2_m = None
 
-        # Composite clouds over sky+moon (clouds occlude the moon -> distortion).
+        # --- 5. Cloud color, with moonlight illumination by proximity ---
+        base = self._base_cloud_color(ph)
+        cloud_col = np.broadcast_to(base, (self.height, self.width, 3)).astype(np.float32).copy()
+        if moon_vis > 0.01:
+            # Smooth moonlight falloff with distance to the moon.
+            if d2_m is None:
+                d2_m = (self.xx - self.moon_x) ** 2 + (self.yy - self.moon_y) ** 2
+            ill = np.exp(-d2_m / (2.0 * self.moon_reach ** 2)) * moon_vis
+            moonlight = np.array([225, 235, 255], np.float32)
+            # Mix the cloud's base color toward bright moonlight as you
+            # approach the moon. ill=1 at the moon, ~0 far away.
+            ill3 = ill[..., None]
+            cloud_col = cloud_col * (1.0 - 0.85 * ill3) + moonlight * (0.85 * ill3)
+
+        # --- 6. Composite clouds OVER everything (occludes moon where dense) ---
         op3 = op[..., None]
-        frame = frame * (1.0 - 0.92 * op3) + cloud_col * op3
+        frame = frame * (1.0 - op3) + cloud_col * op3
 
-        # --- Lightning during the storm ---
+        # --- 7. Lightning during the storm ---
         if storm > 0.05:
             flash = 0.0
             bolt_x = 0.5
             for ft, fx in zip(self.flash_t, self.flash_x):
                 dt = ph - ft
                 if 0.0 <= dt < 0.02:
-                    # sharp multi-flicker envelope decaying over ~0.02 phase
                     env = np.exp(-dt / 0.004) * (0.6 + 0.4 * np.sin(dt * 1800))
                     if env > flash:
                         flash = env
                         bolt_x = fx
             if flash > 0.01:
                 amount = flash * storm
-                # Brighten the whole scene (cloud-lit flash)...
-                frame += np.array([180, 195, 255], np.float32) * (amount * 0.7)
+                # Whole-scene cloud-lit flash...
+                frame += np.array([170, 190, 255], np.float32) * (amount * 0.65)
                 # ...plus a brighter vertical column where the bolt strikes.
-                col_x = bolt_x * (W - 1)
+                col_x = bolt_x * (self.width - 1)
                 colmask = np.exp(-((self.xx - col_x) ** 2) / (2.0 * 0.9 ** 2))
-                frame += np.array([220, 230, 255], np.float32) * \
+                frame += np.array([220, 235, 255], np.float32) * \
                     (colmask[..., None] * amount * 1.4)
 
         return np.clip(frame, 0.0, 255.0).astype(np.float32)
