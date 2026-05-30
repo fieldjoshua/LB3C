@@ -3,14 +3,15 @@
 
 Plays any procedural animation from core.automations directly to the
 Nano via core.drivers.arduino_serial. No Flask, no Socket.IO, no
-device.yml, no gamma correction layer in the way.
+device.yml, no gamma layer. Renders each animation at the strip's
+native resolution and sends it straight to the LEDs - what the
+animation draws is exactly what you see.
 
 Usage:
     python3 ledctl/play_animation.py --list
     python3 ledctl/play_animation.py metaballs
-    python3 ledctl/play_animation.py tunnel --fps 30 --brightness 0.6
-    python3 ledctl/play_animation.py plasma_flow --width 10 --height 10
-    python3 ledctl/play_animation.py aurora --port /dev/cu.usbserial-120
+    python3 ledctl/play_animation.py tunnel --brightness 0.6
+    python3 ledctl/play_animation.py aurora --speed 1.5 --rotate 90
     python3 ledctl/play_animation.py metaballs --duration 30   # stop after 30s
 
 Ctrl-C cleanly clears the strip and disconnects.
@@ -39,29 +40,7 @@ def list_animations() -> None:
     for name, cls in sorted(AUTOMATION_REGISTRY.items()):
         doc = (cls.__doc__ or "").strip().splitlines()
         summary = doc[0] if doc else ""
-        print(f"  {name:14s}  {summary}")
-
-
-def beat_envelope(t: float, bpm: float, shape: str, floor: float,
-                  decay: float, offset_beats: float) -> float:
-    """Brightness multiplier in [floor, 1.0] synced to BPM.
-
-    punch  - exponential decay each beat (peak on the beat, fade until next)
-    sine   - smooth oscillation, peak on the beat
-    square - on for first half of each beat, at floor for second half
-    """
-    if bpm <= 0:
-        return 1.0
-    beats = t * (bpm / 60.0) - offset_beats
-    phase = beats - np.floor(beats)  # 0..1 within current beat
-    if shape == "sine":
-        # cosine peaks at phase=0 (the beat)
-        v = 0.5 + 0.5 * float(np.cos(2.0 * np.pi * phase))
-    elif shape == "square":
-        v = 1.0 if phase < 0.5 else 0.0
-    else:  # "punch"
-        v = float(np.exp(-decay * phase))
-    return floor + (1.0 - floor) * v
+        print(f"  {name:18s}  {summary}")
 
 
 def frame_to_rgb_list(
@@ -79,59 +58,33 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("name", nargs="?", help="animation name (omit with --list)")
     ap.add_argument("--list", action="store_true", help="list available animations")
+
+    # Geometry.
     ap.add_argument("--width", type=int, default=10)
     ap.add_argument("--height", type=int, default=10)
     ap.add_argument("--count", type=int, default=None,
                     help="LED count (default = width*height)")
     ap.add_argument("--fps", type=float, default=30.0)
+
+    # Look / timing.
     ap.add_argument("--brightness", type=float, default=1.0,
                     help="0.0 to 1.0 multiplier applied to every pixel")
+    ap.add_argument("--speed", type=float, default=1.0, metavar="X",
+                    help="animation time multiplier. 1.0=normal, 2.0=2x "
+                         "fast, 0.5=half speed.")
+    ap.add_argument("--rotate", type=int, default=0, choices=[0, 90, 180, 270],
+                    help="rotate the frame this many degrees clockwise to "
+                         "match the strip's physical orientation.")
     ap.add_argument("--duration", type=float, default=None,
                     help="auto-stop after N seconds (default: run until Ctrl-C)")
+
+    # Hardware.
     ap.add_argument("--port", default=None, help="serial port (default: autodetect)")
     ap.add_argument("--baud", type=int, default=500000)
     ap.add_argument("--order", default="GRB", help="strip color order")
     ap.add_argument("--layout", default="serpentine",
                     choices=["serpentine", "linear"])
-    ap.add_argument("--bpm", type=float, default=None,
-                    help="pulse brightness to this tempo (e.g. 120). "
-                         "Off if not set. Combine with --beat-floor / "
-                         "--beat-decay / --beat-shape to tune the pulse.")
-    ap.add_argument("--beat-floor", type=float, default=0.2,
-                    help="minimum brightness between beats (0..1, default 0.2)")
-    ap.add_argument("--beat-decay", type=float, default=4.0,
-                    help="exponential decay rate per beat (higher = punchier, "
-                         "default 4.0)")
-    ap.add_argument("--beat-shape", default="punch",
-                    choices=["punch", "sine", "square"],
-                    help="envelope shape: punch=exp decay, sine=smooth, "
-                         "square=on/off")
-    ap.add_argument("--beat-offset", type=float, default=0.0,
-                    help="phase offset in beats (e.g. 0.5 to flip pulse)")
-    ap.add_argument("--supersample", type=int, default=1, metavar="N",
-                    help="render animation at N*width by N*height internally "
-                         "and average down. Smooth gradients on a coarse "
-                         "strip. 1=off (default), 4 is a good starting point.")
-    ap.add_argument("--center-native", type=int, default=2, metavar="K",
-                    help="when supersampling, render the middle KxK LEDs "
-                         "from a NATIVE-resolution pass instead of the "
-                         "block-averaged supersampled pass. Keeps a bright "
-                         "concentrated core from being diluted by averaging. "
-                         "0=off, 2=middle 2x2 LEDs (default).")
-    ap.add_argument("--fade", type=float, default=0.0, metavar="F",
-                    help="persistence / trail effect. 0=off (default), "
-                         "0.85 nice trails, 0.95 long trails, 1.0 never fades. "
-                         "Each frame the previous frame is multiplied by F "
-                         "and pixel-max-blended with the new content.")
-    ap.add_argument("--rotate", type=int, default=0, choices=[0, 90, 180, 270],
-                    help="rotate the rendered frame this many degrees "
-                         "clockwise before sending to the LEDs. Use this to "
-                         "match the strip's physical orientation when the "
-                         "animation looks 90/180/270 off.")
-    ap.add_argument("--speed", type=float, default=1.0, metavar="X",
-                    help="time multiplier passed into the animation. "
-                         "1.0 = normal, 2.0 = twice as fast, 0.5 = half "
-                         "speed. Applied to the t value of generate_frame.")
+
     ap.add_argument("-v", "--verbose", action="store_true")
 
     args = ap.parse_args()
@@ -155,18 +108,7 @@ def main() -> int:
         return 2
 
     cls = AUTOMATION_REGISTRY[args.name]
-    ss = max(1, int(args.supersample))
-    inner_w, inner_h = args.width * ss, args.height * ss
-    anim = cls(inner_w, inner_h, fps=args.fps)
-    # Optional second instance at native resolution for the middle KxK LEDs.
-    center_k = max(0, int(args.center_native))
-    if center_k > 0 and ss > 1:
-        anim_native = cls(args.width, args.height, fps=args.fps)
-        cx_lo = max(0, (args.width - center_k) // 2)
-        cy_lo = max(0, (args.height - center_k) // 2)
-    else:
-        anim_native = None
-        cx_lo = cy_lo = 0
+    anim = cls(args.width, args.height, fps=args.fps)
 
     count = args.count if args.count is not None else args.width * args.height
     dev = ArduinoSerialDevice({
@@ -181,12 +123,8 @@ def main() -> int:
         }
     })
 
-    beat_msg = (f", pulsing at {args.bpm:g} bpm ({args.beat_shape})"
-                if args.bpm else "")
-    ss_msg = f", supersample {ss}x ({inner_w}x{inner_h} internal)" if ss > 1 else ""
     print(f"playing {args.name!r} on {args.width}x{args.height} "
-          f"({count} LEDs) at {args.fps:g} fps{beat_msg}{ss_msg}. "
-          f"Ctrl-C to stop.")
+          f"({count} LEDs) at {args.fps:g} fps. Ctrl-C to stop.")
 
     dev.open()
 
@@ -201,11 +139,6 @@ def main() -> int:
     next_tick = t0
     frames_sent = 0
     last_report = t0
-    fade = max(0.0, min(1.0, float(args.fade)))
-    persist = (
-        np.zeros((args.height, args.width, 3), dtype=np.float32)
-        if fade > 0.0 else None
-    )
     try:
         while not stop_requested["value"]:
             now = time.monotonic()
@@ -214,54 +147,14 @@ def main() -> int:
 
             anim_t = (now - t0) * args.speed
             np_frame = anim.generate_frame(anim_t)
-            if ss > 1:
-                # Block-average ss x ss neighborhoods down to (height, width).
-                np_frame = (
-                    np_frame.astype(np.float32)
-                    .reshape(args.height, ss, args.width, ss, 3)
-                    .mean(axis=(1, 3))
-                    .astype(np.uint8)
-                )
-                # Optionally composite a NATIVE render over the center KxK
-                # (per-pixel, per-channel max). The native pass gives the
-                # sharp un-diluted core; the supersampled pass gives the
-                # outer-layer Gaussian spillover and dark-matter dimming.
-                # Taking max of the two preserves both: the bright core
-                # wins where native is brighter, while the supersampled
-                # spillover is kept in pixels around it.
-                if anim_native is not None:
-                    nf = anim_native.generate_frame(anim_t)
-                    if nf.dtype != np.uint8:
-                        nf = np.clip(nf, 0, 255).astype(np.uint8)
-                    cs = np_frame[cy_lo:cy_lo + center_k,
-                                  cx_lo:cx_lo + center_k]
-                    nfs = nf[cy_lo:cy_lo + center_k,
-                             cx_lo:cx_lo + center_k]
-                    np_frame[cy_lo:cy_lo + center_k,
-                             cx_lo:cx_lo + center_k] = np.maximum(cs, nfs)
-            if persist is not None:
-                # Decay the persistence buffer; take per-channel max with the
-                # new frame so bright moving features leave fading trails
-                # instead of dimming everything.
-                persist *= fade
-                np.maximum(persist, np_frame.astype(np.float32), out=persist)
-                np_frame = persist.astype(np.uint8)
-            # Rotate the FINAL frame (after fade buffer) so the rotation
-            # applies to what's sent to the strip without scrambling the
-            # persistence buffer's own coordinates.
+
             if args.rotate:
-                # numpy rot90 is COUNTER-clockwise; we want clockwise, so
-                # k = -1 for 90 deg, -2 for 180, -3 for 270.
+                # numpy rot90 is counter-clockwise; negate k for clockwise.
                 k_cw = {90: -1, 180: -2, 270: -3}[args.rotate]
                 np_frame = np.rot90(np_frame, k=k_cw).copy()
-            beat_mul = beat_envelope(
-                anim_t, args.bpm or 0.0, args.beat_shape,
-                args.beat_floor, args.beat_decay, args.beat_offset,
-            ) if args.bpm else 1.0
-            rgb_data = frame_to_rgb_list(np_frame, args.brightness * beat_mul)
-            # After rotation by 90/270 the array's shape is (W, H) instead
-            # of (H, W). draw_rgb_frame treats its width/height args as
-            # the raster shape of rgb_data, so swap accordingly.
+
+            rgb_data = frame_to_rgb_list(np_frame, args.brightness)
+            # After a 90/270 rotation the raster is (W, H) not (H, W).
             if args.rotate in (90, 270):
                 dev.draw_rgb_frame(args.height, args.width, rgb_data)
             else:
@@ -278,7 +171,7 @@ def main() -> int:
             if sleep_for > 0:
                 time.sleep(sleep_for)
             else:
-                # We're behind schedule; reset to avoid runaway catch-up.
+                # Behind schedule; reset to avoid runaway catch-up.
                 next_tick = time.monotonic()
     finally:
         try:
