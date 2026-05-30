@@ -2709,20 +2709,31 @@ class SkyCycle(ProceduralAnimation):
         storm = float(np.clip((ph - 0.88) / 0.02, 0.0, 1.0)) * \
             float(np.clip((0.95 - ph) / 0.02, 0.0, 1.0))
 
-        # --- 3. Clouds drift as a unit (strong x advection, tiny in-place boil) ---
-        z = t * 0.006
-        drift = t * 0.075
-        cfield = _fbm(self.clouds, self.xn * self.cloud_scale + drift,
-                      self.yn * 2.0, z, octaves=4)
-        # Coverage threshold barely moves so cloud SCALE stays constant; the
-        # storm just adds a little more cloud.
-        cov = 0.52 - 0.10 * storm
-        op = np.clip((cfield - cov) / 0.20, 0.0, 1.0)
-
-        # --- 4. Moon (small, bright). Drawn BEFORE clouds so dense cloud occludes it.
-        d2_m = None
+        base = self._base_cloud_color(ph)
         if moon_vis > 0.01:
             d2_m = (self.xx - self.moon_x) ** 2 + (self.yy - self.moon_y) ** 2
+        else:
+            d2_m = None
+
+        # --- 3. FAR cloud layer (behind the moon) -------------------------
+        # Parallax depth (the tunnel trick applied to the sky): the far layer
+        # has smaller features, drifts SLOWER, and is dimmer + more
+        # transparent, so it reads as distant clouds. Coordinate offset +41
+        # decorrelates it from the near layer.
+        far_cf = _fbm(self.clouds, self.xn * 3.1 + t * 0.035 + 41.0,
+                      self.yn * 2.8 + 41.0, t * 0.004, octaves=4)
+        far_op = np.clip((far_cf - 0.56) / 0.24, 0.0, 1.0) * 0.55
+        far_col = base * 0.6   # distant clouds are dimmer (atmospheric depth)
+        if moon_vis > 0.01:
+            # Far clouds get only a faint, wide moon wash (they're behind it).
+            ill_far = np.exp(-d2_m / (2.0 * (self.moon_reach * 1.4) ** 2)) * moon_vis
+            far_col = far_col * (1.0 - 0.5 * ill_far[..., None]) + \
+                np.array([180, 195, 230], np.float32) * (0.5 * ill_far[..., None])
+        far_op3 = far_op[..., None]
+        frame = frame * (1.0 - far_op3) + far_col * far_op3
+
+        # --- 4. Moon (small, bright), between the two cloud layers --------
+        if moon_vis > 0.01:
             disc = np.exp(-d2_m / (2.0 * self.moon_sigma ** 2))
             tiny_halo = np.exp(-d2_m / (2.0 * (self.moon_sigma * 2.0) ** 2)) * 0.25
             moon_lum = (disc + tiny_halo) * (255.0 * moon_vis)
@@ -2730,32 +2741,33 @@ class SkyCycle(ProceduralAnimation):
             frame[..., 1] += moon_lum
             frame[..., 2] += moon_lum * 0.97
 
-        # --- 5. Cloud color ---
-        base = self._base_cloud_color(ph)
-        cloud_col = np.broadcast_to(
+        # --- 5. NEAR cloud layer (in front of the moon) ------------------
+        # Larger features, drifts FASTER, fully opaque/bright. These are the
+        # clouds that pass in front of the moon: they occlude it and catch
+        # its light by proximity.
+        near_cf = _fbm(self.clouds, self.xn * self.cloud_scale + t * 0.075,
+                       self.yn * 2.0, t * 0.006, octaves=4)
+        cov = 0.52 - 0.10 * storm
+        near_op = np.clip((near_cf - cov) / 0.20, 0.0, 1.0)
+        near_col = np.broadcast_to(
             base, (self.height, self.width, 3)).astype(np.float32).copy()
 
-        # Storm definition: lighter cloud tops where density is highest, so the
-        # storm reads as structured cloud rather than a flat black mass.
+        # Storm definition: lighter cloud tops on the near layer.
         if storm > 0.02:
-            defn = np.clip((cfield - cov) / max(1e-3, 1.0 - cov), 0.0, 1.0)
+            defn = np.clip((near_cf - cov) / max(1e-3, 1.0 - cov), 0.0, 1.0)
             light = np.array([52, 56, 72], np.float32)
-            cloud_col = cloud_col + (light - cloud_col) * \
+            near_col = near_col + (light - near_col) * \
                 (defn[..., None] * storm * 0.75)
 
-        # Moonlight on clouds: a single smooth Gaussian gradient. Combined
-        # with the near-black night cloud base, this makes clouds invisible
-        # far from the moon and steadily brighter as they approach it -
-        # the whole visibility curve IS the proximity gradient.
+        # Moonlight proximity gradient on the near clouds.
         if moon_vis > 0.01:
             ill = np.exp(-d2_m / (2.0 * self.moon_reach ** 2)) * moon_vis
             moonlight = np.array([230, 238, 255], np.float32)
             m3 = ill[..., None]
-            cloud_col = cloud_col * (1.0 - m3) + moonlight * m3
+            near_col = near_col * (1.0 - m3) + moonlight * m3
 
-        # --- 6. Composite clouds OVER everything (occludes moon where dense) ---
-        op3 = op[..., None]
-        frame = frame * (1.0 - op3) + cloud_col * op3
+        near_op3 = near_op[..., None]
+        frame = frame * (1.0 - near_op3) + near_col * near_op3
 
         return np.clip(frame, 0.0, 255.0).astype(np.float32)
 
