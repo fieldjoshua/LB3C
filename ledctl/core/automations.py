@@ -2631,9 +2631,13 @@ class SkyCycle(ProceduralAnimation):
         (1.00, (12, 28, 75)),   # back to blue
     ]
 
-    def __init__(self, width, height, fps=30, duration=180.0, seed=7):
+    def __init__(self, width, height, fps=30, duration=180.0, seed=7,
+                 feather=0.20):
         super().__init__(width, height, fps)
         self.duration = float(duration)
+        # Cloud-edge feather width (in noise-value units). Larger = softer,
+        # more gradual cloud edges dissolving into the sky.
+        self.feather = max(0.04, float(feather))
         xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
         yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
         self.xn, self.yn = np.meshgrid(xn, yn)
@@ -2723,7 +2727,7 @@ class SkyCycle(ProceduralAnimation):
         far_cf = _fbm(self.clouds, self.xn * 3.1 + t * 0.035 + 41.0,
                       self.yn * 2.8 + 41.0, t * 0.004, octaves=4)
         far_thr = 0.56
-        far_op = np.clip((far_cf - far_thr) / 0.24, 0.0, 1.0) * 0.55
+        far_op = np.clip((far_cf - far_thr) / (self.feather * 1.2), 0.0, 1.0) * 0.55
         # Anti-light halo: the cloud-edge band (just below the threshold)
         # darkens the sky around clouds, making them pop by contrast.
         far_halo = np.clip((far_cf - (far_thr - 0.12)) / 0.12, 0.0, 1.0) - \
@@ -2756,7 +2760,7 @@ class SkyCycle(ProceduralAnimation):
         near_cf = _fbm(self.clouds, self.xn * self.cloud_scale + t * 0.075,
                        self.yn * 2.0, t * 0.006, octaves=4)
         cov = 0.52 - 0.10 * storm
-        near_op = np.clip((near_cf - cov) / 0.20, 0.0, 1.0)
+        near_op = np.clip((near_cf - cov) / self.feather, 0.0, 1.0)
         # Anti-light halo on the near layer too. Stronger than the far layer
         # because near clouds need more local contrast against the sky.
         near_halo = np.clip((near_cf - (cov - 0.16)) / 0.16, 0.0, 1.0) - \

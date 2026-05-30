@@ -98,6 +98,10 @@ def main() -> int:
                     help="domain-warp intensity for warp-based noise animations "
                          "(caustics/ink/smoke/marble/lava/wood). 1.0 = default, "
                          "higher = more tendrils/distortion.")
+    ap.add_argument("--param", action="append", default=[], metavar="K=V",
+                    help="set any animation constructor parameter, e.g. "
+                         "--param feather=0.35 --param twist=4. Repeatable. "
+                         "Only applied if the animation accepts that param.")
 
     # Hardware.
     ap.add_argument("--port", default=None, help="serial port (default: autodetect)")
@@ -140,14 +144,36 @@ def main() -> int:
         return 2
 
     cls = AUTOMATION_REGISTRY[args.name]
-    # Pass --palette / --warp only to animations whose __init__ accepts them,
-    # so flags are harmless on animations that don't support them.
+    # Pass --palette / --warp / --param only to animations whose __init__
+    # accepts them, so flags are harmless on animations that don't support them.
     extra = {}
     sig_params = inspect.signature(cls.__init__).parameters
     if args.palette is not None and "palette" in sig_params:
         extra["palette"] = args.palette
     if args.warp is not None and "warp" in sig_params:
         extra["warp"] = args.warp
+
+    def _coerce(v):
+        for caster in (int, float):
+            try:
+                return caster(v)
+            except ValueError:
+                pass
+        if v.lower() in ("true", "false"):
+            return v.lower() == "true"
+        return v
+
+    for item in args.param:
+        if "=" not in item:
+            print(f"ignoring malformed --param {item!r} (need K=V)", file=sys.stderr)
+            continue
+        k, v = item.split("=", 1)
+        k = k.strip()
+        if k in sig_params:
+            extra[k] = _coerce(v.strip())
+        else:
+            print(f"note: {args.name!r} has no param {k!r}, ignoring", file=sys.stderr)
+
     anim = cls(args.width, args.height, fps=args.fps, **extra)
 
     count = args.count if args.count is not None else args.width * args.height
