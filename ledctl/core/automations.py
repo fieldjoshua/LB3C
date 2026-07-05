@@ -2212,47 +2212,54 @@ class AmbientBloom(ProceduralAnimation):
 
 
 class AmbientLavaLamp(ProceduralAnimation):
-    """Contained lava lamp with color takeover.
+    """Contained, vivid, multi-colored lava lamp.
 
-    Globules are confined to the box: they bounce off the walls (triangle-wave
-    motion, never wrap or teleport). Nearby globs merge via metaball field
-    addition, growing into bigger shapes. Over each ~morph_seconds epoch the
-    active color's coverage grows from a few small blobs until it fills the
-    whole box and BECOMES the new background - then the next color's globs
-    emerge from the same bouncing blobs and the takeover repeats. The handoff
-    is seamless because a fully-grown foreground color is exactly the next
-    epoch's background.
+    Globs are confined to the box: they bounce off the walls (triangle-wave
+    motion, never wrap or teleport) and merge via metaball-field addition,
+    growing into bigger shapes when they meet. Color is the original's magic:
+    the metaball field is mapped across a full vivid cyclic palette, so blob
+    cores, blob edges, and the background are all DIFFERENT hues at once - and
+    the whole palette drifts continuously, so neither the globs nor the
+    background ever hold a fixed color.
     """
 
-    # Vivid color cycle. Each becomes the background in turn.
-    COLORS = [
-        (230, 55, 90),    # red-pink
-        (240, 150, 30),   # orange
-        (60, 185, 120),   # emerald
-        (45, 120, 220),   # blue
-        (155, 70, 205),   # violet
-        (220, 200, 60),   # gold
+    # Vivid cyclic palette (indigo -> magenta -> red -> orange -> gold -> teal,
+    # wrapping). The field maps across it so many colors are on screen at once.
+    PALETTE = [
+        (0.00, (30, 12, 90)),     # deep indigo
+        (0.18, (150, 30, 165)),   # magenta
+        (0.36, (235, 55, 95)),    # red-pink
+        (0.54, (245, 135, 30)),   # orange
+        (0.72, (240, 215, 70)),   # gold
+        (0.86, (40, 190, 150)),   # teal
     ]
 
-    def __init__(self, width, height, fps=30, speed=1.0, num_blobs=5,
-                 morph_seconds=15.0, seed=3):
+    def __init__(self, width, height, fps=30, speed=1.0, num_blobs=6,
+                 color_speed=1.0, hue_spread=0.9, seed=3):
         super().__init__(width, height, fps)
         xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
         yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
         self.xn, self.yn = np.meshgrid(xn, yn)
         self.n = int(num_blobs)
         self.speed = speed
-        self.morph = max(2.0, float(morph_seconds))
-        self.margin = 0.14          # keep blob centers off the walls
+        self.color_speed = float(color_speed)
+        self.hue_spread = float(hue_spread)   # how much of the palette the
+        #                                       field spans (blob vs background)
+        self.margin = 0.14
         rng = np.random.default_rng(seed)
         self.bx0 = rng.uniform(0.25, 0.75, self.n).astype(np.float32)
         self.by0 = rng.uniform(0.25, 0.75, self.n).astype(np.float32)
-        # Distinct non-zero velocities so blobs drift, meet and separate.
         vx = rng.uniform(0.05, 0.11, self.n) * rng.choice([-1, 1], self.n)
         vy = rng.uniform(0.05, 0.11, self.n) * rng.choice([-1, 1], self.n)
         self.bvx = vx.astype(np.float32)
         self.bvy = vy.astype(np.float32)
         self.br = rng.uniform(0.15, 0.21, self.n).astype(np.float32)
+        # Per-blob hue offset so different globs carry different colors, and a
+        # per-blob slow drift so their colors keep changing independently.
+        self.bhue = rng.uniform(0.0, 1.0, self.n).astype(np.float32)
+        self.bhue_drift = (rng.uniform(0.01, 0.03, self.n)
+                           * rng.choice([-1, 1], self.n)).astype(np.float32)
+        self.lut = _build_palette_lut(self.PALETTE)
 
     @staticmethod
     def _reflect(p, lo, hi):
@@ -2264,31 +2271,35 @@ class AmbientLavaLamp(ProceduralAnimation):
 
     def generate_frame(self, time):
         tt = float(time) * self.speed
-        n_col = len(self.COLORS)
-        epoch = int(tt // self.morph)
-        prog = (tt % self.morph) / self.morph          # 0..1 within epoch
-        bg = np.array(self.COLORS[epoch % n_col], np.float32)
-        fg = np.array(self.COLORS[(epoch + 1) % n_col], np.float32)
-
-        # Metaball field from the bouncing, contained blobs.
-        field = np.zeros_like(self.xn)
         lo, hi = self.margin, 1.0 - self.margin
+
+        # Metaball field + a per-pixel weighted hue: each blob contributes its
+        # own drifting hue, weighted by how close it is. Where blobs merge the
+        # hues blend; the background (weak field) tends toward the base drift.
+        field = np.zeros_like(self.xn)
+        hue_acc = np.zeros_like(self.xn)
         for i in range(self.n):
             bx = self._reflect(self.bx0[i] + self.bvx[i] * tt, lo, hi)
             by = self._reflect(self.by0[i] + self.bvy[i] * tt, lo, hi)
             d2 = (self.xn - bx) ** 2 + (self.yn - by) ** 2
-            field += (self.br[i] ** 2) / (d2 + 0.0025)
-        m = np.tanh(field / self.n * 1.5)              # 0..1 smooth coverage
+            w = (self.br[i] ** 2) / (d2 + 0.0025)
+            field += w
+            hue_i = (self.bhue[i] + self.bhue_drift[i] * tt)
+            hue_acc += w * hue_i
 
-        # Coverage threshold falls through the epoch so the foreground color
-        # grows from small merged globs to full-box takeover.
-        thr = 0.70 - 0.85 * prog                       # 0.70 -> -0.15
-        a = np.clip((m - thr) / 0.16, 0.0, 1.0)        # feathered coverage
+        m = np.tanh(field / self.n * 1.5)                     # 0..1 coverage
+        blob_hue = hue_acc / (field + 1e-4)                   # merged blob hue
+        base_hue = tt * 0.02 * self.color_speed               # drifting bg hue
+        # Blend background hue -> blob hue by coverage, and spread across the
+        # palette so blob cores and background sit at different colors.
+        hue = (base_hue + m * self.hue_spread * 0.5 + blob_hue * 0.5) % 1.0
 
-        out = bg[None, None] * (1.0 - a[..., None]) + fg[None, None] * a[..., None]
-        # Subtle internal shading so the globs read as 3D liquid.
-        out *= (0.85 + 0.15 * m)[..., None]
-        return _sat_boost(out, 1.2).astype(np.float32)
+        col = _map_lut(self.lut, hue)
+        col = _sat_boost(col, 1.25)
+        # Brightness follows coverage so globs read as bright liquid over a
+        # dimmer (but still colored) background - nothing is ever black/flat.
+        out = col * (0.45 + 0.55 * m)[..., None]
+        return out.astype(np.float32)
 
 
 # --- Noise-based ambient set ----------------------------------------------
