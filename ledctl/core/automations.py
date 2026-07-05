@@ -2212,40 +2212,83 @@ class AmbientBloom(ProceduralAnimation):
 
 
 class AmbientLavaLamp(ProceduralAnimation):
-    """Rising, merging soft blobs - classic lava lamp. Organic but not noisy."""
+    """Contained lava lamp with color takeover.
 
-    PALETTE = [(0.00, (6, 2, 22)), (0.42, (70, 12, 50)), (0.66, (205, 40, 30)),
-               (0.84, (255, 120, 24)), (0.96, (255, 205, 90))]
+    Globules are confined to the box: they bounce off the walls (triangle-wave
+    motion, never wrap or teleport). Nearby globs merge via metaball field
+    addition, growing into bigger shapes. Over each ~morph_seconds epoch the
+    active color's coverage grows from a few small blobs until it fills the
+    whole box and BECOMES the new background - then the next color's globs
+    emerge from the same bouncing blobs and the takeover repeats. The handoff
+    is seamless because a fully-grown foreground color is exactly the next
+    epoch's background.
+    """
 
-    def __init__(self, width, height, fps=30, speed=1.0, num_blobs=5):
+    # Vivid color cycle. Each becomes the background in turn.
+    COLORS = [
+        (230, 55, 90),    # red-pink
+        (240, 150, 30),   # orange
+        (60, 185, 120),   # emerald
+        (45, 120, 220),   # blue
+        (155, 70, 205),   # violet
+        (220, 200, 60),   # gold
+    ]
+
+    def __init__(self, width, height, fps=30, speed=1.0, num_blobs=5,
+                 morph_seconds=15.0, seed=3):
         super().__init__(width, height, fps)
         xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
         yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
         self.xn, self.yn = np.meshgrid(xn, yn)
         self.n = int(num_blobs)
         self.speed = speed
-        # Deterministic (not random) blob parameters: evenly spread phases.
-        i = np.arange(self.n)
-        self.sway_phase = (i / self.n) * 2.0 * np.pi
-        self.sway_freq = 0.15 + 0.05 * i
-        self.rise = 0.035 + 0.012 * ((i % 3))
-        self.y0 = i / self.n
-        self.r2 = (0.17 ** 2)
-        self.lut = _build_palette_lut(self.PALETTE)
+        self.morph = max(2.0, float(morph_seconds))
+        self.margin = 0.14          # keep blob centers off the walls
+        rng = np.random.default_rng(seed)
+        self.bx0 = rng.uniform(0.25, 0.75, self.n).astype(np.float32)
+        self.by0 = rng.uniform(0.25, 0.75, self.n).astype(np.float32)
+        # Distinct non-zero velocities so blobs drift, meet and separate.
+        vx = rng.uniform(0.05, 0.11, self.n) * rng.choice([-1, 1], self.n)
+        vy = rng.uniform(0.05, 0.11, self.n) * rng.choice([-1, 1], self.n)
+        self.bvx = vx.astype(np.float32)
+        self.bvy = vy.astype(np.float32)
+        self.br = rng.uniform(0.15, 0.21, self.n).astype(np.float32)
+
+    @staticmethod
+    def _reflect(p, lo, hi):
+        """Fold an unbounded position into [lo, hi] as a triangle wave
+        (a perfect elastic wall bounce, no state needed)."""
+        span = hi - lo
+        q = np.mod(p - lo, 2.0 * span)
+        return lo + (span - np.abs(q - span))
 
     def generate_frame(self, time):
-        t = float(time)
+        tt = float(time) * self.speed
+        n_col = len(self.COLORS)
+        epoch = int(tt // self.morph)
+        prog = (tt % self.morph) / self.morph          # 0..1 within epoch
+        bg = np.array(self.COLORS[epoch % n_col], np.float32)
+        fg = np.array(self.COLORS[(epoch + 1) % n_col], np.float32)
+
+        # Metaball field from the bouncing, contained blobs.
         field = np.zeros_like(self.xn)
+        lo, hi = self.margin, 1.0 - self.margin
         for i in range(self.n):
-            cx = 0.5 + 0.32 * np.sin(t * self.sway_freq[i] * self.speed
-                                     + self.sway_phase[i])
-            cy = (self.y0[i] - t * self.rise[i] * self.speed) % 1.0
-            d2 = (self.xn - cx) ** 2 + (self.yn - cy) ** 2
-            field += self.r2 / (d2 + 0.004)
-        v = np.tanh(field / self.n * 1.6)  # 0..1 smooth blob coverage
-        col = _map_lut(self.lut, v)
-        col = _sat_boost(col, 1.3)
-        return col.astype(np.float32)
+            bx = self._reflect(self.bx0[i] + self.bvx[i] * tt, lo, hi)
+            by = self._reflect(self.by0[i] + self.bvy[i] * tt, lo, hi)
+            d2 = (self.xn - bx) ** 2 + (self.yn - by) ** 2
+            field += (self.br[i] ** 2) / (d2 + 0.0025)
+        m = np.tanh(field / self.n * 1.5)              # 0..1 smooth coverage
+
+        # Coverage threshold falls through the epoch so the foreground color
+        # grows from small merged globs to full-box takeover.
+        thr = 0.70 - 0.85 * prog                       # 0.70 -> -0.15
+        a = np.clip((m - thr) / 0.16, 0.0, 1.0)        # feathered coverage
+
+        out = bg[None, None] * (1.0 - a[..., None]) + fg[None, None] * a[..., None]
+        # Subtle internal shading so the globs read as 3D liquid.
+        out *= (0.85 + 0.15 * m)[..., None]
+        return _sat_boost(out, 1.2).astype(np.float32)
 
 
 # --- Noise-based ambient set ----------------------------------------------
