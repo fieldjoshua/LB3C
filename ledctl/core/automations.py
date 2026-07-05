@@ -2277,46 +2277,47 @@ class AmbientBlobs(ProceduralAnimation):
 
 
 class AmbientLavaLamp(ProceduralAnimation):
-    """Classic lava lamp: warm (red/orange) and cool (blue/purple) are the
-    PEAKS and VALLEYS of the same metaball field, so the minority color always
-    survives as scant remnants in the gaps - and the other color grows out of
-    those remnants rather than popping in from nowhere.
+    """Classic lava lamp with a layered blob-over-ether model.
 
-    Timeline (per full cycle, ~5 min default):
-      1. warm blobs just BE blobs (~1 min hold, no accumulation)
-      2. warm ACCUMULATES and gets hotter until it fills the box (~1 min);
-         cool recedes to scant valley remnants
-      3. cool EMERGES from those remnants, grows to blobs, then holds (~1 min)
-      4. cool ACCUMULATES until it fills the box (~1 min); warm recedes to
-         scant peak remnants
-      5. warm emerges from its remnants -> back to step 1
+    A dim ETHER background fills the box; on top of it sit vivid, focused
+    metaball BLOBS (contained, bouncing, merging). Over a slow cycle:
+      1. warm blobs just BE blobs (~1 min hold)
+      2. warm blobs ACCUMULATE (spread + brighten) until they cover the box
+      3. at full cover the ether commits to warm (hidden under the blobs),
+         then the blob color crossfades warm -> cool as the blobs RECEDE,
+         so cool focused blobs emerge on the now-warm ether (no pop, and no
+         color appearing from nowhere - it grows out of the receding blobs)
+      4. cool blobs hold, then accumulate to cover, ether commits to cool,
+         blob color crossfades back to warm as they recede -> repeat
 
-    A single threshold sweeps the field; where m > thr is warm, else cool. The
-    threshold's hold-plateaus give the "just be blobs" phases; its slow ramps
-    give the accumulation. Globs are contained (bounce off the walls) and merge.
+    Because the blobs are always the metaball PEAKS, both colors get real
+    focused blobs on top of the ether - not negative-space valleys.
     """
 
-    WARM = [(0.00, (70, 10, 6)), (0.45, (210, 45, 18)), (0.85, (250, 130, 40))]
-    COOL = [(0.00, (18, 12, 62)), (0.45, (65, 30, 150)), (0.85, (45, 100, 210))]
+    # Vivid blob gradients (dark core -> bright) and dim ether colors.
+    WARM_BLOB = [(0.00, (110, 18, 8)), (0.5, (240, 70, 20)), (0.9, (255, 175, 55))]
+    COOL_BLOB = [(0.00, (18, 30, 120)), (0.5, (45, 115, 225)), (0.9, (120, 205, 255))]
+    WARM_ETHER = (40, 14, 9)
+    COOL_ETHER = (12, 16, 46)
 
-    # Target WARM coverage fraction over one cycle phase (0..1). A quantile
-    # threshold hits this exactly regardless of blob positions. Plateaus are
-    # the "just be blobs" holds; ramps are the accumulation. Never 0 or 1, so
-    # the minority color always survives as scant remnants.
-    FRAC_KEYS = [
-        (0.00, 0.30),   # warm blobs = minority (~30%) on cool ether ...
-        (0.20, 0.30),   # ... hold ~1 min
-        (0.40, 0.90),   # warm accumulates -> ether (~90%); cool -> scant 10%
-        (0.44, 0.90),   # brief warm-ether
-        (0.52, 0.68),   # cool emerges from remnants -> minority blobs (~32%)
-        (0.72, 0.68),   # cool blobs hold ~1 min on warm ether
-        (0.92, 0.10),   # cool accumulates -> ether (~90%); warm -> scant 10%
-        (0.95, 0.10),   # brief cool-ether
-        (1.00, 0.30),   # warm emerges from remnants -> back to blobs
+    # Keyframes: (phase, ether_mix, blob_mix, blob_cover). mix 0=cool, 1=warm.
+    # blob_cover is the fraction of the box the blobs occupy (0=focused specks,
+    # ~0.96=full). ether crossfades while blobs cover; blob color crossfades
+    # while blobs recede.
+    KEYS = [
+        (0.00, 0.0, 1.0, 0.90),   # warm blobs large, just committed cool ether
+        (0.10, 0.0, 1.0, 0.40),   # -> warm focused blobs emerged on cool ether
+        (0.24, 0.0, 1.0, 0.40),   # warm blob hold
+        (0.44, 0.0, 1.0, 0.96),   # warm accumulate -> cover
+        (0.50, 1.0, 1.0, 0.94),   # ether commits WARM (crossfade, hidden)
+        (0.60, 1.0, 0.0, 0.40),   # blob->cool while receding -> cool blobs emerge
+        (0.74, 1.0, 0.0, 0.40),   # cool blob hold
+        (0.94, 1.0, 0.0, 0.96),   # cool accumulate -> cover
+        (1.00, 0.0, 1.0, 0.94),   # ether commits COOL + blob->warm (== 0.00)
     ]
 
     def __init__(self, width, height, fps=30, speed=1.0, num_blobs=5,
-                 cycle_seconds=300.0, feather=0.14, seed=3):
+                 cycle_seconds=300.0, feather=0.12, seed=3):
         super().__init__(width, height, fps)
         xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
         yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
@@ -2334,8 +2335,10 @@ class AmbientLavaLamp(ProceduralAnimation):
         self.bvx = vx.astype(np.float32)
         self.bvy = vy.astype(np.float32)
         self.br = rng.uniform(0.15, 0.21, self.n).astype(np.float32)
-        self.warm_lut = _build_palette_lut(self.WARM)
-        self.cool_lut = _build_palette_lut(self.COOL)
+        self.warm_blob_lut = _build_palette_lut(self.WARM_BLOB)
+        self.cool_blob_lut = _build_palette_lut(self.COOL_BLOB)
+        self.warm_ether = np.array(self.WARM_ETHER, np.float32)
+        self.cool_ether = np.array(self.COOL_ETHER, np.float32)
 
     @staticmethod
     def _reflect(p, lo, hi):
@@ -2343,16 +2346,19 @@ class AmbientLavaLamp(ProceduralAnimation):
         q = np.mod(p - lo, 2.0 * span)
         return lo + (span - np.abs(q - span))
 
-    def _frac_at(self, ph):
-        ks = self.FRAC_KEYS
+    def _keys_at(self, ph):
+        ks = self.KEYS
         for i in range(len(ks) - 1):
-            p0, v0 = ks[i]
-            p1, v1 = ks[i + 1]
+            p0 = ks[i][0]
+            p1 = ks[i + 1][0]
             if p0 <= ph <= p1:
                 u = (ph - p0) / max(1e-6, p1 - p0)
                 u = u * u * (3.0 - 2.0 * u)          # smoothstep easing
-                return v0 + (v1 - v0) * u
-        return ks[-1][1]
+                a, b = ks[i], ks[i + 1]
+                return (a[1] + (b[1] - a[1]) * u,
+                        a[2] + (b[2] - a[2]) * u,
+                        a[3] + (b[3] - a[3]) * u)
+        return ks[-1][1], ks[-1][2], ks[-1][3]
 
     def generate_frame(self, time):
         tt = float(time) * self.speed
@@ -2367,25 +2373,30 @@ class AmbientLavaLamp(ProceduralAnimation):
             field += (self.br[i] ** 2) / (d2 + 0.0025)
         m = np.tanh(field / self.n * 1.5)                 # 0..1 field
 
-        # Quantile threshold hits the target warm fraction EXACTLY, whatever
-        # the blobs are doing. warm = m > thr (peaks), cool = m < thr (valleys).
         ph = (tt / self.cycle) % 1.0
-        warm_target = self._frac_at(ph)
-        thr = float(np.quantile(m, 1.0 - warm_target))
-        warm_a = np.clip((m - thr) / self.feather + 0.5, 0.0, 1.0)
-        warm_frac = float(warm_a.mean())
+        ether_mix, blob_mix, blob_cover = self._keys_at(ph)
 
-        # Each family shaded by how deep into its own region a pixel is, so
-        # cores are bright and edges dark within the family.
-        warm_col = _map_lut(self.warm_lut, np.clip((m - thr) * 2.0 + 0.5, 0.02, 0.98))
-        cool_col = _map_lut(self.cool_lut, np.clip((thr - m) * 2.0 + 0.5, 0.02, 0.98))
+        # Blob alpha: quantile threshold so the blobs occupy exactly
+        # blob_cover of the box (focused peaks that spread as cover grows).
+        thr = float(np.quantile(m, 1.0 - blob_cover))
+        a = np.clip((m - thr) / self.feather + 0.5, 0.0, 1.0)
+        # Sharpen so blob cores read as focused, vivid liquid.
+        a = a * a * (3.0 - 2.0 * a)
 
-        # "Hotter as it accumulates": the dominant family glows brighter.
-        heat_warm = 0.62 + 0.55 * warm_frac
-        heat_cool = 0.62 + 0.55 * (1.0 - warm_frac)
-        wa = warm_a[..., None]
-        out = (cool_col * heat_cool) * (1.0 - wa) + (warm_col * heat_warm) * wa
-        return _sat_boost(out, 1.15).astype(np.float32)
+        # Vivid blob color (internal gradient by field depth), crossfaded
+        # between families by blob_mix.
+        shade = np.clip(m * 1.15, 0.05, 0.95)
+        wb = _map_lut(self.warm_blob_lut, shade)
+        cb = _map_lut(self.cool_blob_lut, shade)
+        blob_col = _sat_boost(cb * (1.0 - blob_mix) + wb * blob_mix, 1.3)
+
+        # Dim ether background, crossfaded between families by ether_mix.
+        ether_col = (self.cool_ether * (1.0 - ether_mix)
+                     + self.warm_ether * ether_mix)[None, None]
+
+        a3 = a[..., None]
+        out = ether_col * (1.0 - a3) + blob_col * a3
+        return out.astype(np.float32)
 
 
 # --- Noise-based ambient set ----------------------------------------------
