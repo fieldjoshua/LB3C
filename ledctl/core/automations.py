@@ -2211,20 +2211,12 @@ class AmbientBloom(ProceduralAnimation):
         return (col * bright[..., None]).astype(np.float32)
 
 
-class AmbientLavaLamp(ProceduralAnimation):
-    """Contained, vivid, multi-colored lava lamp.
-
-    Globs are confined to the box: they bounce off the walls (triangle-wave
-    motion, never wrap or teleport) and merge via metaball-field addition,
-    growing into bigger shapes when they meet. Color is the original's magic:
-    the metaball field is mapped across a full vivid cyclic palette, so blob
-    cores, blob edges, and the background are all DIFFERENT hues at once - and
-    the whole palette drifts continuously, so neither the globs nor the
-    background ever hold a fixed color.
+class AmbientBlobs(ProceduralAnimation):
+    """Contained multi-colored blobs. Globs bounce inside the box and merge;
+    each carries its own (stable) hue and the whole palette drifts slowly, so
+    colors are varied but coherent - not flickery.
     """
 
-    # Vivid cyclic palette (indigo -> magenta -> red -> orange -> gold -> teal,
-    # wrapping). The field maps across it so many colors are on screen at once.
     PALETTE = [
         (0.00, (30, 12, 90)),     # deep indigo
         (0.18, (150, 30, 165)),   # magenta
@@ -2235,7 +2227,7 @@ class AmbientLavaLamp(ProceduralAnimation):
     ]
 
     def __init__(self, width, height, fps=30, speed=1.0, num_blobs=6,
-                 color_speed=1.0, hue_spread=0.9, seed=3):
+                 color_speed=1.0, hue_spread=0.6, seed=3):
         super().__init__(width, height, fps)
         xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
         yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
@@ -2243,8 +2235,7 @@ class AmbientLavaLamp(ProceduralAnimation):
         self.n = int(num_blobs)
         self.speed = speed
         self.color_speed = float(color_speed)
-        self.hue_spread = float(hue_spread)   # how much of the palette the
-        #                                       field spans (blob vs background)
+        self.hue_spread = float(hue_spread)
         self.margin = 0.14
         rng = np.random.default_rng(seed)
         self.bx0 = rng.uniform(0.25, 0.75, self.n).astype(np.float32)
@@ -2254,17 +2245,12 @@ class AmbientLavaLamp(ProceduralAnimation):
         self.bvx = vx.astype(np.float32)
         self.bvy = vy.astype(np.float32)
         self.br = rng.uniform(0.15, 0.21, self.n).astype(np.float32)
-        # Per-blob hue offset so different globs carry different colors, and a
-        # per-blob slow drift so their colors keep changing independently.
+        # Static per-blob hue offsets (no independent drift -> not flickery).
         self.bhue = rng.uniform(0.0, 1.0, self.n).astype(np.float32)
-        self.bhue_drift = (rng.uniform(0.01, 0.03, self.n)
-                           * rng.choice([-1, 1], self.n)).astype(np.float32)
         self.lut = _build_palette_lut(self.PALETTE)
 
     @staticmethod
     def _reflect(p, lo, hi):
-        """Fold an unbounded position into [lo, hi] as a triangle wave
-        (a perfect elastic wall bounce, no state needed)."""
         span = hi - lo
         q = np.mod(p - lo, 2.0 * span)
         return lo + (span - np.abs(q - span))
@@ -2272,10 +2258,6 @@ class AmbientLavaLamp(ProceduralAnimation):
     def generate_frame(self, time):
         tt = float(time) * self.speed
         lo, hi = self.margin, 1.0 - self.margin
-
-        # Metaball field + a per-pixel weighted hue: each blob contributes its
-        # own drifting hue, weighted by how close it is. Where blobs merge the
-        # hues blend; the background (weak field) tends toward the base drift.
         field = np.zeros_like(self.xn)
         hue_acc = np.zeros_like(self.xn)
         for i in range(self.n):
@@ -2284,22 +2266,98 @@ class AmbientLavaLamp(ProceduralAnimation):
             d2 = (self.xn - bx) ** 2 + (self.yn - by) ** 2
             w = (self.br[i] ** 2) / (d2 + 0.0025)
             field += w
-            hue_i = (self.bhue[i] + self.bhue_drift[i] * tt)
-            hue_acc += w * hue_i
-
-        m = np.tanh(field / self.n * 1.5)                     # 0..1 coverage
-        blob_hue = hue_acc / (field + 1e-4)                   # merged blob hue
-        base_hue = tt * 0.02 * self.color_speed               # drifting bg hue
-        # Blend background hue -> blob hue by coverage, and spread across the
-        # palette so blob cores and background sit at different colors.
+            hue_acc += w * self.bhue[i]        # stable per-blob hue
+        m = np.tanh(field / self.n * 1.5)
+        blob_hue = hue_acc / (field + 1e-4)
+        base_hue = tt * 0.015 * self.color_speed
         hue = (base_hue + m * self.hue_spread * 0.5 + blob_hue * 0.5) % 1.0
-
-        col = _map_lut(self.lut, hue)
-        col = _sat_boost(col, 1.25)
-        # Brightness follows coverage so globs read as bright liquid over a
-        # dimmer (but still colored) background - nothing is ever black/flat.
+        col = _sat_boost(_map_lut(self.lut, hue), 1.25)
         out = col * (0.45 + 0.55 * m)[..., None]
         return out.astype(np.float32)
+
+
+class AmbientLavaLamp(ProceduralAnimation):
+    """Classic lava lamp: warm blobs on a cool ether, roles swapping slowly.
+
+    Warm (red/orange) globules rise and merge on a cool (blue/purple) ether.
+    Over each slow epoch the warm slowly ACCUMULATES until it fills the box and
+    becomes the ether; then the cool color emerges as the new blobs, and it in
+    turn accumulates to become the ether - back and forth, indefinitely. Only
+    two color families (warm/cool), each a small gradient so the blobs and
+    ether stay rich, not flat. Globs are contained (bounce off the walls) and
+    merge when they meet.
+    """
+
+    # Small gradients per family (dark -> bright within the family) so blobs
+    # have depth and the ether isn't a dead flat color.
+    WARM = [(0.00, (70, 10, 6)), (0.45, (210, 45, 18)), (0.85, (250, 130, 40))]
+    COOL = [(0.00, (18, 12, 62)), (0.45, (65, 30, 150)), (0.85, (45, 100, 210))]
+
+    def __init__(self, width, height, fps=30, speed=1.0, num_blobs=5,
+                 morph_seconds=35.0, seed=3):
+        super().__init__(width, height, fps)
+        xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
+        yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
+        self.xn, self.yn = np.meshgrid(xn, yn)
+        self.n = int(num_blobs)
+        self.speed = speed
+        self.morph = max(4.0, float(morph_seconds))  # per family accumulation
+        self.margin = 0.14
+        rng = np.random.default_rng(seed)
+        self.bx0 = rng.uniform(0.25, 0.75, self.n).astype(np.float32)
+        self.by0 = rng.uniform(0.25, 0.75, self.n).astype(np.float32)
+        vx = rng.uniform(0.04, 0.09, self.n) * rng.choice([-1, 1], self.n)
+        vy = rng.uniform(0.04, 0.09, self.n) * rng.choice([-1, 1], self.n)
+        self.bvx = vx.astype(np.float32)
+        self.bvy = vy.astype(np.float32)
+        self.br = rng.uniform(0.15, 0.21, self.n).astype(np.float32)
+        self.warm_lut = _build_palette_lut(self.WARM)
+        self.cool_lut = _build_palette_lut(self.COOL)
+
+    @staticmethod
+    def _reflect(p, lo, hi):
+        span = hi - lo
+        q = np.mod(p - lo, 2.0 * span)
+        return lo + (span - np.abs(q - span))
+
+    def generate_frame(self, time):
+        tt = float(time) * self.speed
+        lo, hi = self.margin, 1.0 - self.margin
+
+        # Metaball field from contained, bouncing, merging blobs.
+        field = np.zeros_like(self.xn)
+        for i in range(self.n):
+            bx = self._reflect(self.bx0[i] + self.bvx[i] * tt, lo, hi)
+            by = self._reflect(self.by0[i] + self.bvy[i] * tt, lo, hi)
+            d2 = (self.xn - bx) ** 2 + (self.yn - by) ** 2
+            field += (self.br[i] ** 2) / (d2 + 0.0025)
+        m = np.tanh(field / self.n * 1.5)                 # 0..1 coverage
+
+        # Epoch: even -> warm blobs accumulate on cool ether; odd -> cool
+        # blobs accumulate on warm ether. Roles swap and it repeats.
+        epoch = int(tt // self.morph)
+        prog = (tt % self.morph) / self.morph             # 0..1 accumulation
+        warm_blobs = (epoch % 2 == 0)
+        blob_lut = self.warm_lut if warm_blobs else self.cool_lut
+        ether_lut = self.cool_lut if warm_blobs else self.warm_lut
+
+        # Coverage grows across the epoch: the blob color slowly accumulates
+        # until it fills the box (becomes the ether for the next epoch).
+        thr = 0.70 - 0.85 * prog
+        a = np.clip((m - thr) / 0.16, 0.0, 1.0)
+
+        # Blob shade from the field (cores bright, edges dark within family).
+        blob_col = _map_lut(blob_lut, np.clip(m * 0.9, 0.0, 0.98))
+        # Ether shade: a slow large-scale gradient so it drifts like liquid,
+        # never a dead flat color.
+        eth = 0.35 + 0.30 * np.sin(2 * np.pi * (self.xn * 0.4 + self.yn * 0.25)
+                                   + tt * 0.10)
+        ether_col = _map_lut(ether_lut, np.clip(eth, 0.0, 0.98))
+
+        out = ether_col * (1.0 - a[..., None]) + blob_col * a[..., None]
+        # Blobs a touch brighter than the ether for readable depth.
+        out *= (0.80 + 0.20 * m)[..., None]
+        return _sat_boost(out, 1.15).astype(np.float32)
 
 
 # --- Noise-based ambient set ----------------------------------------------
@@ -3070,6 +3128,7 @@ AUTOMATION_REGISTRY = {
     'ambient_sweep': AmbientSweep,
     'ambient_bloom': AmbientBloom,
     'ambient_lavalamp': AmbientLavaLamp,
+    'ambient_blobs': AmbientBlobs,
     'ambient_clouds': AmbientClouds,
     'ambient_caustics': AmbientCaustics,
     'ambient_ink': AmbientInk,
