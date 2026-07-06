@@ -3181,8 +3181,9 @@ class Phyllotaxis(ProceduralAnimation):
         self.hue_period = max(10.0, float(hue_period))
         self._scale = float(min(width, height))
         self.sigma = max(0.45, float(sigma_frac) * self._scale)
-        self.xx, self.yy = np.meshgrid(np.arange(width, dtype=np.float32),
-                                       np.arange(height, dtype=np.float32))
+        self.xs = np.arange(width, dtype=np.float32)
+        self.ys = np.arange(height, dtype=np.float32)
+        self.xx, self.yy = np.meshgrid(self.xs, self.ys)
         self.cx = (width - 1) / 2.0
         self.cy = (height - 1) / 2.0
         # Seeds dissolve just inside the panel so corners stay black.
@@ -3192,6 +3193,32 @@ class Phyllotaxis(ProceduralAnimation):
 
     def _hue_color(self, hue):
         return self.lut[int((hue % 1.0) * self.lut_n) % self.lut_n]
+
+    @staticmethod
+    def _phi(z):
+        # tanh approximation of the standard normal CDF (max err ~3e-4).
+        return 0.5 * (1.0 + np.tanh(0.7978845608 * (z + 0.044715 * z * z * z)))
+
+    def _splat(self, px, py, sigma):
+        """Pixel-INTEGRATED Gaussian splat (exact anti-aliasing).
+
+        Each LED's value is the integral of the seed's Gaussian over that
+        LED's square area (product of CDF differences - separable). Unlike
+        point-sampling, total emitted light is CONSTANT no matter where the
+        seed sits between LEDs, so sub-pixel motion becomes a perfectly
+        smooth energy handoff between neighbors - no shimmer, no pulsing.
+        This is the optimal rendering a coarse grid physically allows; the
+        diffuser is the reconstruction filter.
+        """
+        inv = 1.0 / sigma
+        h = 0.5 * inv
+        zx = (self.xs - px) * inv
+        zy = (self.ys - py) * inv
+        wx = self._phi(zx + h) - self._phi(zx - h)
+        wy = self._phi(zy + h) - self._phi(zy - h)
+        # Normalize so a perfectly centered seed peaks at 1.0.
+        p = float(self._phi(np.float32(h)) - self._phi(np.float32(-h)))
+        return np.outer(wy, wx) / (p * p)
 
     def generate_frame(self, time):
         t = float(time) * self.speed
@@ -3218,8 +3245,7 @@ class Phyllotaxis(ProceduralAnimation):
             if env <= 0.003:
                 continue
             col = self._hue_color((n * self.spawn) / self.hue_period)
-            d2 = (self.xx - px) ** 2 + (self.yy - py) ** 2
-            g = np.exp(-d2 / (2.0 * self.sigma * self.sigma)) * env
+            g = self._splat(px, py, self.sigma) * env
             frame += col[None, None] * g[..., None]
 
         # The bud: a compact center glow that swells at each birth (the
@@ -3228,8 +3254,7 @@ class Phyllotaxis(ProceduralAnimation):
         phase = (t % self.spawn) / self.spawn
         swell = 0.55 + 0.45 * np.exp(-phase * 4.0)
         bud_col = self._hue_color(t / self.hue_period)
-        d2c = (self.xx - self.cx) ** 2 + (self.yy - self.cy) ** 2
-        bud = np.exp(-d2c / (2.0 * (self.sigma * 1.4) ** 2)) * swell
+        bud = self._splat(self.cx, self.cy, self.sigma * 1.4) * swell
         frame += bud_col[None, None] * bud[..., None]
 
         return np.clip(frame, 0.0, 255.0).astype(np.float32)
