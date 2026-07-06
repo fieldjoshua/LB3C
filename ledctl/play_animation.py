@@ -120,6 +120,12 @@ def main() -> int:
                          "per-pixel toggling. 0.5 = half-strength, calmer "
                          "but slight bias. 0.0 = no dither (banding shows). "
                          "Try 0.4-0.6 if dithering is too 'shimmery'.")
+    ap.add_argument("--dither-floor", type=float, default=6.0, metavar="N",
+                    help="channels dimmer than N (0-255 scale) are plainly "
+                         "rounded instead of dithered. At low luminance a "
+                         "+/-1 toggle is a huge relative jump and reads as "
+                         "sparkle, especially in peripheral vision. Default "
+                         "6. 0 = dither everything (old behavior).")
 
     ap.add_argument("-v", "--verbose", action="store_true")
 
@@ -228,9 +234,18 @@ def main() -> int:
                         sd_err = np.zeros_like(f, dtype=np.float32)
                     target = f + sd_err
                     rounded = np.round(target)
+                    err = target - rounded
+                    if args.dither_floor > 0:
+                        # Don't dither dim channels: at low luminance a +/-1
+                        # toggle is a huge RELATIVE brightness jump (Weber's
+                        # law) and the periphery is extra flicker-sensitive,
+                        # so dim regions sparkle. Plain rounding there costs
+                        # at most half a level - invisible - and kills it.
+                        dim = f < float(args.dither_floor)
+                        rounded = np.where(dim, np.round(f), rounded)
+                        err = np.where(dim, 0.0, err)
                     # Attenuate error feedback so dither can be tuned down.
-                    sd_err = ((target - rounded) *
-                              float(args.dither_strength)).astype(np.float32)
+                    sd_err = (err * float(args.dither_strength)).astype(np.float32)
                     np_frame = np.clip(rounded, 0, 255).astype(np.uint8)
                 else:
                     np_frame = np.clip(f, 0, 255).astype(np.uint8)
