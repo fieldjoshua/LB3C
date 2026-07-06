@@ -3260,6 +3260,149 @@ class Phyllotaxis(ProceduralAnimation):
         return np.clip(frame, 0.0, 255.0).astype(np.float32)
 
 
+class SilentDisco(ProceduralAnimation):
+    """Looks timed to music with no mic - because it plays a silent song.
+
+    A deterministic composition clock (BPM -> beats -> 4-beat bars ->
+    8-bar sections) drives visual 'instruments', each with the attack/
+    exponential-decay envelope of a struck drum:
+
+      kick    four-on-the-floor bloom, bottom-center; accented on beat 1
+      pump    the background DUCKS on every kick and swells back
+              (sidechain compression, the signature EDM visual)
+      snare   white band flash on beats 2 and 4
+      hats    tiny alternating corner ticks on the 8ths (16ths in B section)
+      bass    purple standing wave in the bottom rows, wobbling per beat
+      lead    a bright dot playing a quantized 8-note arpeggio - it STEPS
+              between positions on the 8th-note grid (quantized motion is
+              the strongest 'this is music' tell)
+      fill    a 16th-note sweep across the panel on the last beat of every
+              4th bar (the drum fill)
+      crash   gold shimmer wash on beat 1 of every 8-bar phrase
+
+    Sections alternate every 8 bars: A = sparser (kick on 1 and 3, 8th
+    hats), B = full energy (four-on-floor, 16th hats, deeper pump, wobble).
+    Everything is a pure function of time - deterministic, loopable,
+    legible: an attentive mind can count the bars and predict the fill.
+    """
+
+    LEAD_NOTES = [0, 3, 7, 10, 12, 10, 7, 3]     # minor arpeggio, 8 steps
+
+    def __init__(self, width, height, fps=30, bpm=118.0, pump=0.55,
+                 palette=None):
+        super().__init__(width, height, fps)
+        self.beat = 60.0 / max(40.0, float(bpm))
+        self.pump = float(pump)
+        self._scale = float(min(width, height))
+        self.xx, self.yy = np.meshgrid(np.arange(width, dtype=np.float32),
+                                       np.arange(height, dtype=np.float32))
+        w1, h1 = width - 1.0, height - 1.0
+        # Precomputed instrument shapes (all soft, diffuser-friendly).
+        self.kick_shape = np.exp(-(((self.xx - w1 * 0.5) ** 2)
+                                   + ((self.yy - h1 * 0.78) ** 2))
+                                 / (2.0 * (0.30 * self._scale) ** 2))
+        self.snare_shape = np.exp(-((self.yy - h1 * 0.30) ** 2)
+                                  / (2.0 * (0.09 * self._scale) ** 2))
+        self.crash_shape = np.exp(-(self.yy ** 2)
+                                  / (2.0 * (0.22 * self._scale) ** 2))
+        self.hatL = np.exp(-(((self.xx - w1 * 0.08) ** 2)
+                             + ((self.yy - h1 * 0.06) ** 2)) / (2.0 * 0.45 ** 2))
+        self.hatR = np.exp(-(((self.xx - w1 * 0.92) ** 2)
+                             + ((self.yy - h1 * 0.06) ** 2)) / (2.0 * 0.45 ** 2))
+        self.bass_mask = np.clip((self.yy / h1 - 0.72) / 0.28, 0.0, 1.0)
+        self.lut = _build_palette_lut(_resolve_palette(palette,
+                                                       NAMED_PALETTES['cosmic']))
+        self.lut_n = self.lut.shape[0]
+
+    def _note_color(self, note):
+        return self.lut[int(((note % 12) / 12.0) * self.lut_n) % self.lut_n]
+
+    def generate_frame(self, time):
+        t = float(time)
+        bt = t / self.beat                 # beats elapsed (float)
+        beat_i = int(bt)
+        bar_i = beat_i // 4
+        bar_beat = beat_i % 4              # 0..3 within the bar
+        bar8 = bar_i % 8                   # position in the 8-bar phrase
+        sec_b = ((bar_i // 8) % 2) == 1    # section B = full energy
+
+        frame = np.zeros((self.height, self.width, 3), np.float32)
+
+        # --- kick + accent: every beat in B, beats 1 & 3 (0,2) in A ---
+        if sec_b:
+            ks = bt % 1.0
+            kick_beat = beat_i
+        else:
+            ks = bt % 2.0
+            kick_beat = beat_i - (beat_i % 2)
+        accent = 1.0 if (kick_beat % 4 == 0) else 0.78
+        kick_env = np.exp(-ks * 4.5) * accent
+
+        # --- sidechain-pumped background wash (hue drifts very slowly) ---
+        depth = self.pump * (1.25 if sec_b else 1.0)
+        bg_hue = (t * 0.01) % 1.0
+        bg_col = self.lut[int(bg_hue * self.lut_n) % self.lut_n]
+        frame += bg_col[None, None] * (0.16 * (1.0 - min(1.0, depth) * kick_env))
+
+        # --- kick bloom ---
+        frame += np.array([255, 60, 20], np.float32)[None, None] * \
+            (self.kick_shape * kick_env * 0.95)[..., None]
+
+        # --- snare on beats 2 and 4 (indices 1, 3) ---
+        if bt >= 1.0:
+            ss = (bt - 1.0) % 2.0
+            snare_env = np.exp(-ss * 7.0)
+            frame += np.array([240, 240, 255], np.float32)[None, None] * \
+                (self.snare_shape * snare_env * 0.85)[..., None]
+
+        # --- hats: 8ths in A, 16ths in B, alternating corners ---
+        sub = 4.0 if sec_b else 2.0
+        hp = (bt * sub) % 1.0
+        hat_env = np.exp(-hp * 9.0) * 0.5
+        hat = self.hatR if (int(bt * sub) % 2) else self.hatL
+        frame += np.array([180, 200, 255], np.float32)[None, None] * \
+            (hat * hat_env)[..., None]
+
+        # --- bass wobble in the bottom rows (faster + deeper in B) ---
+        wob_rate = 2.0 if sec_b else 1.0
+        wob = 0.5 + 0.5 * np.sin(2.0 * np.pi *
+                                 (self.xx / self._scale * 1.2 - bt * wob_rate))
+        frame += np.array([90, 20, 200], np.float32)[None, None] * \
+            (self.bass_mask * wob * (0.30 + 0.25 * kick_env))[..., None]
+
+        # --- lead: quantized 8th-note arpeggio, dot STEPS between notes ---
+        step = int(bt * 2.0) % len(self.LEAD_NOTES)
+        note = self.LEAD_NOTES[step] + (2 if sec_b else 0)
+        lx = 1.0 + ((note % 12) / 12.0) * (self.width - 3.0)
+        ly = (self.height - 1.0) * (0.42 - 0.22 * ((note % 12) / 12.0))
+        lp = (bt * 2.0) % 1.0
+        lead_env = np.exp(-lp * 3.5)
+        lead = np.exp(-(((self.xx - lx) ** 2) + ((self.yy - ly) ** 2))
+                      / (2.0 * 0.55 ** 2))
+        frame += self._note_color(note)[None, None] * \
+            (lead * lead_env)[..., None]
+
+        # --- drum fill: 16th sweep on the last beat of bars 4 and 8 ---
+        if bar_beat == 3 and (bar8 == 3 or bar8 == 7):
+            beat_ph = bt % 1.0
+            idx16 = min(3, int(beat_ph * 4.0))
+            fx = (self.width - 1.0) * (idx16 / 3.0)
+            p16 = (beat_ph * 4.0) % 1.0
+            fill_env = np.exp(-p16 * 6.0)
+            fill = np.exp(-((self.xx - fx) ** 2) / (2.0 * 0.8 ** 2))
+            frame += np.array([255, 160, 220], np.float32)[None, None] * \
+                (fill * fill_env * 0.8)[..., None]
+
+        # --- crash on beat 1 of each 8-bar phrase (long gold decay) ---
+        cs = bt % 32.0
+        if cs < 4.0:
+            crash_env = np.exp(-cs * 1.1)
+            frame += np.array([255, 230, 150], np.float32)[None, None] * \
+                (self.crash_shape * crash_env * 0.55)[..., None]
+
+        return np.clip(frame, 0.0, 255.0).astype(np.float32)
+
+
 # Registry of available automations
 AUTOMATION_REGISTRY = {
     'color_wave': ColorWave,
@@ -3303,6 +3446,7 @@ AUTOMATION_REGISTRY = {
     'sky_cycle': SkyCycle,
     'nebula_cycle': NebulaCycle,
     'phyllotaxis': Phyllotaxis,
+    'silent_disco': SilentDisco,
 }
 
 
