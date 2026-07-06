@@ -3466,14 +3466,15 @@ class PassingClouds(ProceduralAnimation):
       - clouds drift as coherent UNITS (strong advection, near-zero boil)
     """
 
-    SKY_TOP = np.array([35, 85, 185], np.float32)      # zenith blue
-    SKY_BOT = np.array([140, 185, 235], np.float32)    # pale horizon
+    # Uniform DEEP blue - no horizon gradient. The dark field is what makes
+    # the white cumulus read as extreme.
+    SKY = np.array([10, 24, 72], np.float32)
     # (layer scale, x-speed, coverage, max alpha, feather, light strength,
     #  base cloud color)
     LAYERS = [
-        (3.2, 0.010, 0.63, 0.50, 0.30, 1.6, (210, 222, 240)),   # high, thin
-        (2.4, 0.028, 0.59, 0.80, 0.22, 2.6, (235, 240, 250)),   # mid
-        (1.6, 0.055, 0.55, 1.00, 0.18, 3.6, (250, 250, 252)),   # low cumulus
+        (3.0, 0.010, 0.63, 0.40, 0.22, 2.2, (200, 214, 238)),   # high, thin
+        (2.2, 0.028, 0.59, 0.85, 0.15, 3.4, (238, 242, 252)),   # mid
+        (1.5, 0.055, 0.55, 1.00, 0.11, 4.6, (252, 252, 254)),   # low cumulus
     ]
 
     def __init__(self, width, height, fps=30, speed=1.0, coverage=0.0,
@@ -3486,9 +3487,9 @@ class PassingClouds(ProceduralAnimation):
         yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
         self.xn, self.yn = np.meshgrid(xn, yn)
         self.noise = _ValueNoise3D(16, seed)
-        # Precompute the sky gradient (vertical).
-        vy = self.yn[..., None]
-        self.sky = (self.SKY_TOP * (1.0 - vy) + self.SKY_BOT * vy).astype(np.float32)
+        # Flat deep-blue sky, no horizon.
+        self.sky = np.broadcast_to(
+            self.SKY, (height, width, 3)).astype(np.float32).copy()
 
     def generate_frame(self, time):
         t = float(time) * self.speed
@@ -3519,7 +3520,7 @@ class PassingClouds(ProceduralAnimation):
             # vertical gradient says which way each cloud surface faces -
             # top edges brighten (silver lining), bellies shade gray-blue.
             gy, gx = np.gradient(cf)
-            lit = np.clip(1.0 + lightk * (gy * 3.0 + gx * 1.0), 0.55, 1.28)
+            lit = np.clip(1.0 + lightk * (gy * 3.0 + gx * 1.0), 0.42, 1.35)
             cloud = np.array(col, np.float32)[None, None] * lit[..., None]
             # Shadowed parts drift toward blue-gray (skylight fill).
             shadow = np.clip(1.0 - lit, 0.0, 0.45)[..., None]
