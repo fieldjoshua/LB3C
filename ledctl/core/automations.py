@@ -3446,6 +3446,92 @@ class SilentDisco(ProceduralAnimation):
         return np.clip(frame, 0.0, 255.0).astype(np.float32)
 
 
+class PassingClouds(ProceduralAnimation):
+    """Realistic daytime clouds drifting across a blue sky.
+
+    The realism cues, each cheap but physical:
+      - sky GRADIENT: deep zenith blue at the top fading to pale horizon
+        blue at the bottom (instantly reads as 'sky')
+      - three PARALLAX layers: high thin clouds (small, slow, translucent),
+        mid, and low cumulus (big, fast, bright) - apparent speed increases
+        as clouds get nearer, exactly like looking out a window
+      - SELF-SHADOWING: each cloud is lit from above-left. Brightness is
+        modulated by the density field's gradient, so cloud tops glow
+        white (silver lining) while bellies shade gray-blue - this is what
+        makes a blob read as a puffy 3D cloud
+      - ANTI-LIGHT: the sky darkens slightly in a ring just outside each
+        cloud, so white edges pop by contrast
+      - WEATHER cycle: coverage slowly waxes and wanes (~3.5 min period),
+        so the sky drifts between sparse and broken - skies never sit still
+      - clouds drift as coherent UNITS (strong advection, near-zero boil)
+    """
+
+    SKY_TOP = np.array([35, 85, 185], np.float32)      # zenith blue
+    SKY_BOT = np.array([140, 185, 235], np.float32)    # pale horizon
+    # (layer scale, x-speed, coverage, max alpha, feather, light strength,
+    #  base cloud color)
+    LAYERS = [
+        (3.2, 0.010, 0.63, 0.50, 0.30, 1.6, (210, 222, 240)),   # high, thin
+        (2.4, 0.028, 0.59, 0.80, 0.22, 2.6, (235, 240, 250)),   # mid
+        (1.6, 0.055, 0.55, 1.00, 0.18, 3.6, (250, 250, 252)),   # low cumulus
+    ]
+
+    def __init__(self, width, height, fps=30, speed=1.0, coverage=0.0,
+                 weather_period=210.0, seed=9):
+        super().__init__(width, height, fps)
+        self.speed = float(speed)
+        self.coverage = float(coverage)     # +opens more cloud, -clears sky
+        self.weather_period = max(20.0, float(weather_period))
+        xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
+        yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
+        self.xn, self.yn = np.meshgrid(xn, yn)
+        self.noise = _ValueNoise3D(16, seed)
+        # Precompute the sky gradient (vertical).
+        vy = self.yn[..., None]
+        self.sky = (self.SKY_TOP * (1.0 - vy) + self.SKY_BOT * vy).astype(np.float32)
+
+    def generate_frame(self, time):
+        t = float(time) * self.speed
+        frame = self.sky.copy()
+
+        # Weather: slow sinusoidal coverage swing, sparse <-> broken sky.
+        weather = 0.06 * np.sin(2.0 * np.pi * t / self.weather_period) \
+            + self.coverage
+
+        for li, (scale, vx, cov, amax, feather, lightk, col) in \
+                enumerate(self.LAYERS):
+            off = 31.0 * li
+            cf = _fbm(self.noise,
+                      self.xn * scale + t * vx + off,
+                      self.yn * (scale * 0.9) + off,
+                      t * 0.004,                    # near-zero boil
+                      octaves=4)
+            thr = cov - weather
+            a = np.clip((cf - thr) / feather, 0.0, 1.0) * amax
+
+            # Anti-light: darken sky in the band just below threshold so
+            # bright cloud edges pop against slightly deeper blue.
+            halo = np.clip((cf - (thr - 0.10)) / 0.10, 0.0, 1.0) - \
+                np.clip((cf - thr) / 0.04, 0.0, 1.0)
+            frame *= (1.0 - np.clip(halo, 0.0, 1.0)[..., None] * 0.12)
+
+            # Self-shadowing: light from above(-left). The density field's
+            # vertical gradient says which way each cloud surface faces -
+            # top edges brighten (silver lining), bellies shade gray-blue.
+            gy, gx = np.gradient(cf)
+            lit = np.clip(1.0 + lightk * (gy * 3.0 + gx * 1.0), 0.55, 1.28)
+            cloud = np.array(col, np.float32)[None, None] * lit[..., None]
+            # Shadowed parts drift toward blue-gray (skylight fill).
+            shadow = np.clip(1.0 - lit, 0.0, 0.45)[..., None]
+            cloud = cloud * (1.0 - shadow) + \
+                np.array([150, 162, 185], np.float32)[None, None] * shadow
+
+            a3 = a[..., None]
+            frame = frame * (1.0 - a3) + cloud * a3
+
+        return np.clip(frame, 0.0, 255.0).astype(np.float32)
+
+
 # Registry of available automations
 AUTOMATION_REGISTRY = {
     'color_wave': ColorWave,
@@ -3490,6 +3576,7 @@ AUTOMATION_REGISTRY = {
     'nebula_cycle': NebulaCycle,
     'phyllotaxis': Phyllotaxis,
     'silent_disco': SilentDisco,
+    'passing_clouds': PassingClouds,
 }
 
 
