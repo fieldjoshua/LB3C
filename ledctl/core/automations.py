@@ -3137,6 +3137,104 @@ class NebulaCycle(ProceduralAnimation):
         return np.clip(frame, 0.0, 255.0).astype(np.float32)
 
 
+class Phyllotaxis(ProceduralAnimation):
+    """The sunflower's algorithm, made visible.
+
+    A seed is born at the center bud every spawn_period seconds, rotated
+    exactly one GOLDEN ANGLE (360 * (1 - 1/phi) = 137.5077...) from the
+    previous seed, and drifts outward with r proportional to sqrt(age)
+    (Vogel's model - equal area swept per unit time, so density stays
+    uniform and motion decelerates like a ripple).
+
+    The rules an attentive mind can discover by watching:
+      - the birth rhythm (the bud swells at each spawn - the heartbeat)
+      - no seed ever aligns into spokes (the golden angle is the most
+        irrational division of the circle - optimal packing, provably)
+      - Fibonacci spiral arms emerge as a CONSEQUENCE, never drawn
+      - every frame is a mathematically valid sunflower (Vogel spiral)
+      - hue is a slow clock: seeds carry their birth color outward, so
+        radius reads as age and the disc is a color-gradient timeline
+
+    Session rules honored: born at center (nothing pops from nowhere),
+    feathered death at the rim (corners stay black), deterministic (zero
+    randomness), slow/organic, float output for sigma-delta dithering.
+    """
+
+    PHI = (1.0 + 5.0 ** 0.5) / 2.0
+    GOLDEN_ANGLE = 2.0 * np.pi * (2.0 - PHI)   # 2*pi/phi^2 ~ 137.5077 deg
+
+    PALETTE = [
+        (0.00, (40, 10, 95)),     # deep violet
+        (0.20, (165, 30, 150)),   # magenta
+        (0.40, (235, 70, 60)),    # ember
+        (0.60, (250, 180, 60)),   # gold
+        (0.80, (40, 170, 160)),   # teal
+    ]
+
+    def __init__(self, width, height, fps=30, speed=1.0,
+                 spawn_period=1.6, lifetime=48.0, hue_period=210.0,
+                 sigma_frac=0.055, palette=None):
+        super().__init__(width, height, fps)
+        self.speed = float(speed)
+        self.spawn = max(0.2, float(spawn_period))
+        self.life = max(5.0, float(lifetime))
+        self.hue_period = max(10.0, float(hue_period))
+        self._scale = float(min(width, height))
+        self.sigma = max(0.45, float(sigma_frac) * self._scale)
+        self.xx, self.yy = np.meshgrid(np.arange(width, dtype=np.float32),
+                                       np.arange(height, dtype=np.float32))
+        self.cx = (width - 1) / 2.0
+        self.cy = (height - 1) / 2.0
+        # Seeds dissolve just inside the panel so corners stay black.
+        self.rim = 0.5 * self._scale * 0.92
+        self.lut = _build_palette_lut(_resolve_palette(palette, self.PALETTE))
+        self.lut_n = self.lut.shape[0]
+
+    def _hue_color(self, hue):
+        return self.lut[int((hue % 1.0) * self.lut_n) % self.lut_n]
+
+    def generate_frame(self, time):
+        t = float(time) * self.speed
+        frame = np.zeros((self.height, self.width, 3), np.float32)
+
+        # Seeds alive now: born in the window (t - lifetime, t].
+        n_hi = int(np.floor(t / self.spawn))
+        n_lo = max(0, int(np.ceil((t - self.life) / self.spawn)))
+        for n in range(n_lo, n_hi + 1):
+            age = t - n * self.spawn
+            if age < 0.0 or age >= self.life:
+                continue
+            u = age / self.life
+            r = self.rim * np.sqrt(u)          # Vogel: r ~ sqrt(age)
+            th = n * self.GOLDEN_ANGLE
+            px = self.cx + r * np.cos(th)
+            py = self.cy + r * np.sin(th)
+            # Envelope: emerge from the bud, dissolve feathered at the rim,
+            # slightly dimmer with radius (the tunnel vignette lesson).
+            fade_in = min(1.0, u / 0.06)
+            k = min(1.0, max(0.0, (u - 0.82) / 0.18))
+            fade_out = 1.0 - (k * k * (3.0 - 2.0 * k))
+            env = fade_in * fade_out * (1.0 - 0.30 * u)
+            if env <= 0.003:
+                continue
+            col = self._hue_color((n * self.spawn) / self.hue_period)
+            d2 = (self.xx - px) ** 2 + (self.yy - py) ** 2
+            g = np.exp(-d2 / (2.0 * self.sigma * self.sigma)) * env
+            frame += col[None, None] * g[..., None]
+
+        # The bud: a compact center glow that swells at each birth (the
+        # piece's heartbeat) and carries the hue of the seed being born -
+        # the source announces what it is about to create.
+        phase = (t % self.spawn) / self.spawn
+        swell = 0.55 + 0.45 * np.exp(-phase * 4.0)
+        bud_col = self._hue_color(t / self.hue_period)
+        d2c = (self.xx - self.cx) ** 2 + (self.yy - self.cy) ** 2
+        bud = np.exp(-d2c / (2.0 * (self.sigma * 1.4) ** 2)) * swell
+        frame += bud_col[None, None] * bud[..., None]
+
+        return np.clip(frame, 0.0, 255.0).astype(np.float32)
+
+
 # Registry of available automations
 AUTOMATION_REGISTRY = {
     'color_wave': ColorWave,
@@ -3179,6 +3277,7 @@ AUTOMATION_REGISTRY = {
     'ambient_wood': AmbientWood,
     'sky_cycle': SkyCycle,
     'nebula_cycle': NebulaCycle,
+    'phyllotaxis': Phyllotaxis,
 }
 
 
