@@ -3288,6 +3288,8 @@ class SilentDisco(ProceduralAnimation):
 
     LEAD_NOTES = [0, 3, 7, 10, 12, 10, 7, 3]     # minor arpeggio, 8 steps
 
+    GOLD = 2.39996322972865  # golden angle (rad): deterministic wander
+
     def __init__(self, width, height, fps=30, bpm=118.0, pump=0.55,
                  palette=None):
         super().__init__(width, height, fps)
@@ -3296,20 +3298,14 @@ class SilentDisco(ProceduralAnimation):
         self._scale = float(min(width, height))
         self.xx, self.yy = np.meshgrid(np.arange(width, dtype=np.float32),
                                        np.arange(height, dtype=np.float32))
-        w1, h1 = width - 1.0, height - 1.0
-        # Precomputed instrument shapes (all soft, diffuser-friendly).
-        self.kick_shape = np.exp(-(((self.xx - w1 * 0.5) ** 2)
-                                   + ((self.yy - h1 * 0.78) ** 2))
-                                 / (2.0 * (0.30 * self._scale) ** 2))
-        self.snare_shape = np.exp(-((self.yy - h1 * 0.30) ** 2)
-                                  / (2.0 * (0.09 * self._scale) ** 2))
-        self.crash_shape = np.exp(-(self.yy ** 2)
-                                  / (2.0 * (0.22 * self._scale) ** 2))
-        self.hatL = np.exp(-(((self.xx - w1 * 0.08) ** 2)
-                             + ((self.yy - h1 * 0.06) ** 2)) / (2.0 * 0.45 ** 2))
-        self.hatR = np.exp(-(((self.xx - w1 * 0.92) ** 2)
-                             + ((self.yy - h1 * 0.06) ** 2)) / (2.0 * 0.45 ** 2))
-        self.bass_mask = np.clip((self.yy / h1 - 0.72) / 0.28, 0.0, 1.0)
+        xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
+        yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
+        self.xn, self.yn = np.meshgrid(xn, yn)
+        self.cx = (width - 1) / 2.0
+        self.cy = (height - 1) / 2.0
+        self.bass_mask = np.clip((self.yy / (height - 1.0) - 0.72) / 0.28,
+                                 0.0, 1.0)
+        self.noise = _ValueNoise3D(16, 5)
         self.lut = _build_palette_lut(_resolve_palette(palette,
                                                        NAMED_PALETTES['cosmic']))
         self.lut_n = self.lut.shape[0]
@@ -3317,75 +3313,119 @@ class SilentDisco(ProceduralAnimation):
     def _note_color(self, note):
         return self.lut[int(((note % 12) / 12.0) * self.lut_n) % self.lut_n]
 
+    def _wander(self, k, r_frac=0.24):
+        """Deterministic organic wander: hit k lands at a golden-angle orbit
+        around center - never repeats, never leaves the panel."""
+        ang = k * self.GOLD
+        rad = self._scale * r_frac * (0.55 + 0.45 * np.sin(k * 0.7))
+        return (self.cx + rad * np.cos(ang), self.cy + rad * np.sin(ang))
+
     def generate_frame(self, time):
         t = float(time)
         bt = t / self.beat                 # beats elapsed (float)
         beat_i = int(bt)
         bar_i = beat_i // 4
-        bar_beat = beat_i % 4              # 0..3 within the bar
-        bar8 = bar_i % 8                   # position in the 8-bar phrase
+        bar_beat = beat_i % 4
+        bar8 = bar_i % 8
         sec_b = ((bar_i // 8) % 2) == 1    # section B = full energy
 
         frame = np.zeros((self.height, self.width, 3), np.float32)
 
-        # --- kick + accent: every beat in B, beats 1 & 3 (0,2) in A ---
+        # --- kick timing: every beat in B, beats 1 & 3 in A ---
         if sec_b:
             ks = bt % 1.0
-            kick_beat = beat_i
+            kick_idx = beat_i
         else:
             ks = bt % 2.0
-            kick_beat = beat_i - (beat_i % 2)
-        accent = 1.0 if (kick_beat % 4 == 0) else 0.78
-        kick_env = np.exp(-ks * 4.5) * accent
+            kick_idx = beat_i - (beat_i % 2)
+        accent = 1.0 if (kick_idx % 4 == 0) else 0.78
+        kick_env = float(np.exp(-ks * 4.5)) * accent
 
-        # --- sidechain-pumped background wash (hue drifts very slowly) ---
-        depth = self.pump * (1.25 if sec_b else 1.0)
-        bg_hue = (t * 0.01) % 1.0
-        bg_col = self.lut[int(bg_hue * self.lut_n) % self.lut_n]
-        frame += bg_col[None, None] * (0.16 * (1.0 - min(1.0, depth) * kick_env))
+        # --- living background: drifting fBm field, sidechain-pumped ---
+        depth = min(1.0, self.pump * (1.25 if sec_b else 1.0))
+        bg_f = _fbm(self.noise, self.xn * 1.8 + t * 0.03,
+                    self.yn * 1.8, t * 0.02, 3)
+        bg_hue = (bg_f * 0.25 + t * 0.012) % 1.0
+        fp = bg_hue * self.lut_n
+        i0 = np.floor(fp).astype(np.int32) % self.lut_n
+        bg_col = self.lut[i0]
+        frame += bg_col * (0.20 * bg_f * (1.0 - depth * kick_env))[..., None]
 
-        # --- kick bloom ---
+        # --- kick: expanding RIPPLE from a wandering point ---
+        kx, ky = self._wander(kick_idx, 0.20)
+        r = np.sqrt((self.xx - kx) ** 2 + (self.yy - ky) ** 2)
+        ring_r = ks * self._scale * 0.75            # expands as it decays
+        ring = np.exp(-((r - ring_r) ** 2) / (2.0 * 1.1 ** 2))
+        core = np.exp(-(r ** 2) / (2.0 * 1.0 ** 2)) * 0.6
         frame += np.array([255, 60, 20], np.float32)[None, None] * \
-            (self.kick_shape * kick_env * 0.95)[..., None]
+            ((ring + core) * kick_env * 0.9)[..., None]
 
-        # --- snare on beats 2 and 4 (indices 1, 3) ---
+        # --- snare: diagonal splash, angle rotates per hit, drifts in decay ---
         if bt >= 1.0:
             ss = (bt - 1.0) % 2.0
+            snare_idx = int((bt - 1.0) // 2.0)
             snare_env = np.exp(-ss * 7.0)
+            ang = snare_idx * self.GOLD + ss * 0.35   # slow sweep during decay
+            sxc, syc = self._wander(snare_idx * 3 + 1, 0.14)
+            d = np.abs((self.xx - sxc) * np.cos(ang)
+                       + (self.yy - syc) * np.sin(ang))
+            band = np.exp(-(d ** 2) / (2.0 * (0.09 * self._scale) ** 2))
             frame += np.array([240, 240, 255], np.float32)[None, None] * \
-                (self.snare_shape * snare_env * 0.85)[..., None]
+                (band * snare_env * 0.8)[..., None]
 
-        # --- hats: 8ths in A, 16ths in B, alternating corners ---
+        # --- hats: ticks orbiting the panel rim (8ths in A, 16ths in B) ---
         sub = 4.0 if sec_b else 2.0
         hp = (bt * sub) % 1.0
+        hat_idx = int(bt * sub)
         hat_env = np.exp(-hp * 9.0) * 0.5
-        hat = self.hatR if (int(bt * sub) % 2) else self.hatL
+        ha = hat_idx * self.GOLD * 1.6
+        hx = self.cx + 0.42 * self._scale * np.cos(ha)
+        hy = self.cy + 0.42 * self._scale * np.sin(ha)
+        hat = np.exp(-(((self.xx - hx) ** 2) + ((self.yy - hy) ** 2))
+                     / (2.0 * 0.5 ** 2))
         frame += np.array([180, 200, 255], np.float32)[None, None] * \
             (hat * hat_env)[..., None]
 
-        # --- bass wobble in the bottom rows (faster + deeper in B) ---
+        # --- bass: two superposed waves + noise sway (organic undulation) ---
         wob_rate = 2.0 if sec_b else 1.0
-        wob = 0.5 + 0.5 * np.sin(2.0 * np.pi *
-                                 (self.xx / self._scale * 1.2 - bt * wob_rate))
+        wob = (0.5 + 0.5 * np.sin(2.0 * np.pi *
+                                  (self.xn * 1.2 - bt * wob_rate * 0.5))) * \
+              (0.6 + 0.4 * np.sin(2.0 * np.pi *
+                                  (self.xn * 0.5 + bt * 0.21)))
         frame += np.array([90, 20, 200], np.float32)[None, None] * \
             (self.bass_mask * wob * (0.30 + 0.25 * kick_env))[..., None]
 
-        # --- lead: quantized 8th-note arpeggio, dot STEPS between notes ---
-        step = int(bt * 2.0) % len(self.LEAD_NOTES)
-        note = self.LEAD_NOTES[step] + (2 if sec_b else 0)
-        lx = 1.0 + ((note % 12) / 12.0) * (self.width - 3.0)
-        ly = (self.height - 1.0) * (0.42 - 0.22 * ((note % 12) / 12.0))
-        lp = (bt * 2.0) % 1.0
-        lead_env = np.exp(-lp * 3.5)
-        lead = np.exp(-(((self.xx - lx) ** 2) + ((self.yy - ly) ** 2))
-                      / (2.0 * 0.55 ** 2))
-        frame += self._note_color(note)[None, None] * \
-            (lead * lead_env)[..., None]
+        # --- lead: quantized arpeggio with a comet TRAIL; pattern varies
+        #     per phrase (as-is / reversed / transposed) - deterministic ---
+        phrase = bar_i // 8
+        notes = list(self.LEAD_NOTES)
+        if phrase % 4 == 1:
+            notes = notes[::-1]
+        elif phrase % 4 == 2:
+            notes = [n + 3 for n in notes]
+        elif phrase % 4 == 3:
+            notes = [n + 5 for n in notes[::-1]]
+        step_f = bt * 2.0
+        lp = step_f % 1.0
+        for ghost in range(3):                        # current + 2 ghosts
+            s = int(step_f) - ghost
+            if s < 0:
+                continue
+            note = notes[s % len(notes)] + (2 if sec_b else 0)
+            lx = 1.0 + ((note % 12) / 12.0) * (self.width - 3.0)
+            ly = (self.height - 1.0) * (0.42 - 0.22 * ((note % 12) / 12.0))
+            genv = np.exp(-(lp + ghost) * 2.2)
+            dot = np.exp(-(((self.xx - lx) ** 2) + ((self.yy - ly) ** 2))
+                         / (2.0 * 0.55 ** 2))
+            frame += self._note_color(note)[None, None] * \
+                (dot * genv)[..., None]
 
-        # --- drum fill: 16th sweep on the last beat of bars 4 and 8 ---
+        # --- drum fill: 16th sweep, direction alternates per fill ---
         if bar_beat == 3 and (bar8 == 3 or bar8 == 7):
             beat_ph = bt % 1.0
             idx16 = min(3, int(beat_ph * 4.0))
+            if (bar_i // 4) % 2 == 1:
+                idx16 = 3 - idx16                     # sweep back the other way
             fx = (self.width - 1.0) * (idx16 / 3.0)
             p16 = (beat_ph * 4.0) % 1.0
             fill_env = np.exp(-p16 * 6.0)
@@ -3393,12 +3433,15 @@ class SilentDisco(ProceduralAnimation):
             frame += np.array([255, 160, 220], np.float32)[None, None] * \
                 (fill * fill_env * 0.8)[..., None]
 
-        # --- crash on beat 1 of each 8-bar phrase (long gold decay) ---
+        # --- crash: expanding gold ring from center on each phrase ---
         cs = bt % 32.0
         if cs < 4.0:
             crash_env = np.exp(-cs * 1.1)
+            rc = np.sqrt((self.xx - self.cx) ** 2 + (self.yy - self.cy) ** 2)
+            cr = cs * self._scale * 0.35
+            cring = np.exp(-((rc - cr) ** 2) / (2.0 * 1.6 ** 2))
             frame += np.array([255, 230, 150], np.float32)[None, None] * \
-                (self.crash_shape * crash_env * 0.55)[..., None]
+                (cring * crash_env * 0.6)[..., None]
 
         return np.clip(frame, 0.0, 255.0).astype(np.float32)
 
