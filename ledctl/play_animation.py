@@ -198,6 +198,23 @@ def main() -> int:
     print(f"playing {args.name!r} on {args.width}x{args.height} "
           f"({count} LEDs) at {args.fps:g} fps. Ctrl-C to stop.")
 
+    # Arduino pipeline budget: a frame must be RECEIVED (10 wire bits per
+    # byte at the configured baud) and then SHOWN (WS2811 = 30us per LED,
+    # during which FastLED disables interrupts, so overlapping bytes are
+    # lost). If the frame period is shorter than receive+show, the Nano
+    # silently tears/drops frames - and dropped frames also break the
+    # sigma-delta dither's temporal averaging. Warn with the exact ceiling.
+    frame_bytes = 6 + count * 3
+    send_s = frame_bytes * 10.0 / args.baud
+    show_s = count * 30e-6
+    max_clean_fps = 1.0 / (send_s + show_s)
+    if args.fps > max_clean_fps:
+        print(f"  WARNING: {args.fps:g} fps exceeds the serial+show budget "
+              f"({send_s*1e3:.1f}ms + {show_s*1e3:.1f}ms per frame). The "
+              f"Arduino will tear/drop frames and dithering accuracy "
+              f"degrades. Max clean rate for this setup: "
+              f"{max_clean_fps:.0f} fps.")
+
     dev.open()
 
     stop_requested = {"value": False}
