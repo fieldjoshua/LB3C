@@ -120,12 +120,13 @@ def main() -> int:
                          "per-pixel toggling. 0.5 = half-strength, calmer "
                          "but slight bias. 0.0 = no dither (banding shows). "
                          "Try 0.4-0.6 if dithering is too 'shimmery'.")
-    ap.add_argument("--dither-floor", type=float, default=6.0, metavar="N",
+    ap.add_argument("--dither-floor", type=float, default=30.0, metavar="N",
                     help="channels dimmer than N (0-255 scale) are plainly "
                          "rounded instead of dithered. At low luminance a "
-                         "+/-1 toggle is a huge relative jump and reads as "
-                         "sparkle, especially in peripheral vision. Default "
-                         "6. 0 = dither everything (old behavior).")
+                         "+/-1 toggle is a large RELATIVE jump (Weber's law: "
+                         "at value 10 it's 10 percent) and reads as flicker/ "
+                         "sparkle. Default 30 (~3 percent toggle at the "
+                         "boundary, just below visibility). 0 = dither all.")
 
     ap.add_argument("-v", "--verbose", action="store_true")
 
