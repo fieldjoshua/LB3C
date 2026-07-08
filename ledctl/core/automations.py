@@ -3725,7 +3725,9 @@ class NightClouds(ProceduralAnimation):
 
             # A cloud pixel's light = moonlight reaching it x what its
             # density lets through. Far from the moon: black (invisible).
-            lit = (self.ill * trans * litscale)[..., None]
+            # HARD-CAPPED at 0.85 so no cloud, under any parameters, is
+            # ever brighter than the moon - the source outshines the lit.
+            lit = np.minimum(self.ill * trans * litscale, 0.85)[..., None]
             cloud_col = self.MOONLIGHT[None, None] * lit
 
             # Clouds composite OVER the sky/moon: a dense cloud crossing
