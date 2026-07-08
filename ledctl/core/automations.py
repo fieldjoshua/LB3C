@@ -3665,7 +3665,7 @@ class NightClouds(ProceduralAnimation):
     ]
 
     def __init__(self, width, height, fps=30, speed=1.0, coverage=0.0,
-                 moon_reach=0.26, density_gate=0.20, gate_feather=0.14,
+                 moon_reach=0.26, density_gate=0.06, gate_feather=0.12,
                  corner=-1, inset=1, seed=11):
         super().__init__(width, height, fps)
         self.speed = float(speed)
