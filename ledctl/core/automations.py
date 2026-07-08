@@ -3665,8 +3665,8 @@ class NightClouds(ProceduralAnimation):
     ]
 
     def __init__(self, width, height, fps=30, speed=1.0, coverage=0.0,
-                 moon_reach=0.22, density_gate=0.20, gate_feather=0.14,
-                 seed=11):
+                 moon_reach=0.26, density_gate=0.20, gate_feather=0.14,
+                 corner=-1, inset=1, seed=11):
         super().__init__(width, height, fps)
         self.speed = float(speed)
         self.coverage = float(coverage)
@@ -3680,28 +3680,31 @@ class NightClouds(ProceduralAnimation):
                              np.arange(height, dtype=np.float32))
         self.noise = _ValueNoise3D(16, seed)
 
-        # Moon: hash-placed (static for the run), kept away from the edges
-        # so its glow fits on the panel.
-        hx = PassingClouds._hash(seed * 3.7 + 1.0)
-        hy = PassingClouds._hash(seed * 5.1 + 2.0)
-        mx = (0.22 + 0.56 * hx) * (width - 1)
-        my = (0.20 + 0.55 * hy) * (height - 1)
+        # Moon: a HARD-EDGED 2x2 block (exactly 4 LEDs, no halo, no tails)
+        # in a corner. corner: 0=TL 1=TR 2=BL 3=BR, -1 = pick from seed.
+        # The hard stop matters beyond looks: a flat integer plateau has no
+        # fractional pixels for the quantizer to toggle, so the moon can
+        # never flicker.
+        ci = int(corner)
+        if ci < 0:
+            ci = int(PassingClouds._hash(seed * 7.3 + 4.0) * 4) % 4
+        ins = max(0, int(inset))
+        mx = (ins + 0.5) if ci in (0, 2) else (width - 2 - ins) + 0.5
+        my = (ins + 0.5) if ci in (0, 1) else (height - 2 - ins) + 0.5
         d2m = (xx - mx) ** 2 + (yy - my) ** 2
-        moon_sigma = max(0.38, 0.042 * self._scale)      # <= 4 lit pixels
+        # Hard disc: the 4 pixels around the half-integer center and nothing
+        # else (their distance is ~0.71; the next ring is >=1.5).
+        self.moon_mask = (np.sqrt(d2m) <= 0.9).astype(np.float32)
         reach = max(1.6, float(moon_reach) * self._scale)
-        # Static precomputed fields (the moon does not move).
-        self.moon_lum = (np.exp(-d2m / (2.0 * moon_sigma ** 2))
-                         + 0.20 * np.exp(-d2m / (2.0 * (moon_sigma * 2.0) ** 2)))
-        self.airglow = np.exp(-d2m / (2.0 * (reach * 0.55) ** 2)) * 0.10
+        # Illumination field for the CLOUDS (invisible against black sky).
         self.ill = np.exp(-d2m / (2.0 * reach ** 2)).astype(np.float32)
 
     def generate_frame(self, time):
         t = float(time) * self.speed
         frame = np.zeros((self.height, self.width, 3), np.float32)
 
-        # Black sky + faint airglow + the moon itself.
-        frame += self.AIRGLOW[None, None] * self.airglow[..., None]
-        frame += self.MOON[None, None] * self.moon_lum[..., None]
+        # Black sky + the hard-edged moon. No airglow - crisp stop.
+        frame += self.MOON[None, None] * self.moon_mask[..., None]
 
         for li, (scale, vx, cov, amax, feather, litscale) in \
                 enumerate(self.LAYERS):
