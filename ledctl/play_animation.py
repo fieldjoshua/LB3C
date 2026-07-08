@@ -250,18 +250,25 @@ def main() -> int:
                 if not args.no_dither:
                     if sd_err is None or sd_err.shape != f.shape:
                         sd_err = np.zeros_like(f, dtype=np.float32)
+                        q_prev = np.round(f).astype(np.float32)
                     target = f + sd_err
                     rounded = np.round(target)
                     err = target - rounded
                     if args.dither_floor > 0:
-                        # Don't dither dim channels: at low luminance a +/-1
-                        # toggle is a huge RELATIVE brightness jump (Weber's
-                        # law) and the periphery is extra flicker-sensitive,
-                        # so dim regions sparkle. Plain rounding there costs
-                        # at most half a level - invisible - and kills it.
+                        # Dim channels: at low luminance a +/-1 toggle is a
+                        # huge RELATIVE brightness jump (Weber's law), so no
+                        # dithering there. But plain rounding flickers too:
+                        # an input hovering at a .5 boundary hard-toggles on
+                        # every tiny drift. So dim channels use a HYSTERESIS
+                        # rounder: hold the current level until the input
+                        # moves >0.75 of a level away. Boundary wobble = zero
+                        # toggles; real ramps step exactly once per level.
                         dim = f < float(args.dither_floor)
-                        rounded = np.where(dim, np.round(f), rounded)
+                        hold = np.abs(f - q_prev) <= 0.75
+                        hys = np.where(hold, q_prev, np.round(f))
+                        rounded = np.where(dim, hys, rounded)
                         err = np.where(dim, 0.0, err)
+                    q_prev = rounded.astype(np.float32)
                     # Attenuate error feedback so dither can be tuned down.
                     sd_err = (err * float(args.dither_strength)).astype(np.float32)
                     np_frame = np.clip(rounded, 0, 255).astype(np.uint8)
