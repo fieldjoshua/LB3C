@@ -3634,6 +3634,105 @@ class PassingClouds(ProceduralAnimation):
         return np.clip(frame, 0.0, 255.0).astype(np.float32)
 
 
+class NightClouds(ProceduralAnimation):
+    """Passing clouds at night: black sky, a small static moon, and clouds
+    that exist only where its light finds them.
+
+    The physical model:
+      - The sky is BLACK. A moon (<= 4 lit pixels, placed by hash - a new
+        seed moves it) is the only light source, with a tight halo and a
+        faint airglow around it.
+      - Clouds drift as coherent units (two parallax layers) but carry no
+        light of their own: their brightness is the moonlight proximity
+        field, so they fade in as they approach the moon and vanish into
+        the dark as they leave.
+      - DENSITY GATE: moonlight penetrates thin cloud but not dense cloud.
+        The gate is GRADUAL (smoothstep on the density field), so a dense
+        core near the moon reads as a dark silhouette wrapped in a bright
+        silver rim - the core blocks the light, its thinning edges
+        transmit it. Dense cloud crossing the moon occludes the disc
+        itself (clouds composite over the moon).
+    """
+
+    MOONLIGHT = np.array([205, 218, 245], np.float32)   # cool moonlit cloud
+    MOON = np.array([240, 244, 252], np.float32)
+    AIRGLOW = np.array([70, 85, 130], np.float32)
+
+    # (scale, x-speed, coverage, max alpha, feather, lit-scale)
+    LAYERS = [
+        (3.0, 0.012, 0.60, 0.60, 0.20, 0.55),   # far: small, slow, dim
+        (1.7, 0.050, 0.54, 1.00, 0.13, 1.00),   # near: big, fast, bright
+    ]
+
+    def __init__(self, width, height, fps=30, speed=1.0, coverage=0.0,
+                 moon_reach=0.22, density_gate=0.20, gate_feather=0.14,
+                 seed=11):
+        super().__init__(width, height, fps)
+        self.speed = float(speed)
+        self.coverage = float(coverage)
+        self.gate = float(density_gate)        # density offset where cloud
+        self.gate_feather = max(0.03, float(gate_feather))  # goes opaque
+        self._scale = float(min(width, height))
+        xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
+        yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
+        self.xn, self.yn = np.meshgrid(xn, yn)
+        xx, yy = np.meshgrid(np.arange(width, dtype=np.float32),
+                             np.arange(height, dtype=np.float32))
+        self.noise = _ValueNoise3D(16, seed)
+
+        # Moon: hash-placed (static for the run), kept away from the edges
+        # so its glow fits on the panel.
+        hx = PassingClouds._hash(seed * 3.7 + 1.0)
+        hy = PassingClouds._hash(seed * 5.1 + 2.0)
+        mx = (0.22 + 0.56 * hx) * (width - 1)
+        my = (0.20 + 0.55 * hy) * (height - 1)
+        d2m = (xx - mx) ** 2 + (yy - my) ** 2
+        moon_sigma = max(0.38, 0.042 * self._scale)      # <= 4 lit pixels
+        reach = max(1.6, float(moon_reach) * self._scale)
+        # Static precomputed fields (the moon does not move).
+        self.moon_lum = (np.exp(-d2m / (2.0 * moon_sigma ** 2))
+                         + 0.20 * np.exp(-d2m / (2.0 * (moon_sigma * 2.0) ** 2)))
+        self.airglow = np.exp(-d2m / (2.0 * (reach * 0.55) ** 2)) * 0.10
+        self.ill = np.exp(-d2m / (2.0 * reach ** 2)).astype(np.float32)
+
+    def generate_frame(self, time):
+        t = float(time) * self.speed
+        frame = np.zeros((self.height, self.width, 3), np.float32)
+
+        # Black sky + faint airglow + the moon itself.
+        frame += self.AIRGLOW[None, None] * self.airglow[..., None]
+        frame += self.MOON[None, None] * self.moon_lum[..., None]
+
+        for li, (scale, vx, cov, amax, feather, litscale) in \
+                enumerate(self.LAYERS):
+            off = 47.0 * li
+            cf = _fbm(self.noise,
+                      self.xn * scale + t * vx + off,
+                      self.yn * (scale * 0.9) + off,
+                      t * 0.004, octaves=4)
+            thr = cov - self.coverage
+            a = np.clip((cf - thr) / feather, 0.0, 1.0) * amax
+
+            # Gradual density gate: thin cloud transmits moonlight,
+            # dense cloud blocks it. trans falls smoothly 1 -> 0 as the
+            # density field rises past the gate.
+            u = np.clip((cf - (thr + self.gate)) / self.gate_feather,
+                        0.0, 1.0)
+            trans = 1.0 - u * u * (3.0 - 2.0 * u)
+
+            # A cloud pixel's light = moonlight reaching it x what its
+            # density lets through. Far from the moon: black (invisible).
+            lit = (self.ill * trans * litscale)[..., None]
+            cloud_col = self.MOONLIGHT[None, None] * lit
+
+            # Clouds composite OVER the sky/moon: a dense cloud crossing
+            # the moon occludes the disc (dark silhouette, silver rim).
+            a3 = a[..., None]
+            frame = frame * (1.0 - a3) + cloud_col * a3
+
+        return np.clip(frame, 0.0, 255.0).astype(np.float32)
+
+
 # Registry of available automations
 AUTOMATION_REGISTRY = {
     'color_wave': ColorWave,
@@ -3679,6 +3778,7 @@ AUTOMATION_REGISTRY = {
     'phyllotaxis': Phyllotaxis,
     'silent_disco': SilentDisco,
     'passing_clouds': PassingClouds,
+    'night_clouds': NightClouds,
 }
 
 
