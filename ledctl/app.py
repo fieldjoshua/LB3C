@@ -68,6 +68,12 @@ try:
 except ImportError as e:
     import_logger.warning(f"Could not import WLED driver: {e}")
     WLEDDevice = None
+
+try:
+    from core.drivers.arduino_serial import ArduinoSerialDevice
+except ImportError as e:
+    import_logger.warning(f"Could not import Arduino serial driver: {e}")
+    ArduinoSerialDevice = None
 from core.frames import FrameProcessor, MediaAnimation
 from core.gamma import GammaCorrector, create_corrector
 from core.automations import create_automation, get_automation_info, AUTOMATION_REGISTRY
@@ -651,6 +657,12 @@ def register_devices():
             DeviceManager.register_device('WLED', WLEDDevice)
         except Exception as e:
             logger.warning(f"Could not register WLED device: {e}")
+
+    if ArduinoSerialDevice:
+        try:
+            DeviceManager.register_device('ARDUINO', ArduinoSerialDevice)
+        except Exception as e:
+            logger.warning(f"Could not register Arduino serial device: {e}")
 
 
 def main():
