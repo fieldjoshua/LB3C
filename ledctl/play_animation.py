@@ -120,13 +120,15 @@ def main() -> int:
                          "per-pixel toggling. 0.5 = half-strength, calmer "
                          "but slight bias. 0.0 = no dither (banding shows). "
                          "Try 0.4-0.6 if dithering is too 'shimmery'.")
-    ap.add_argument("--dither-floor", type=float, default=30.0, metavar="N",
-                    help="channels dimmer than N (0-255 scale) are plainly "
-                         "rounded instead of dithered. At low luminance a "
-                         "+/-1 toggle is a large RELATIVE jump (Weber's law: "
-                         "at value 10 it's 10 percent) and reads as flicker/ "
-                         "sparkle. Default 30 (~3 percent toggle at the "
-                         "boundary, just below visibility). 0 = dither all.")
+    ap.add_argument("--dither-floor", type=float, default=256.0, metavar="N",
+                    help="channels dimmer than N (0-255 scale) use steady "
+                         "hysteresis rounding; brighter ones get sigma-delta "
+                         "temporal dithering. Default 256 = hysteresis "
+                         "EVERYWHERE (no temporal modulation at all - dim "
+                         "toggles violate Weber's law, bright toggles sit in "
+                         "the eye's peak flicker-sensitivity band). Set e.g. "
+                         "30 to re-enable dithering of bright regions, 0 for "
+                         "classic full sigma-delta.")
 
     ap.add_argument("-v", "--verbose", action="store_true")
 
