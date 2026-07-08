@@ -3478,14 +3478,14 @@ class PassingClouds(ProceduralAnimation):
     ]
 
     def __init__(self, width, height, fps=30, speed=1.0, coverage=0.0,
-                 weather_period=210.0, storm_period=300.0, storm_frac=0.20,
-                 seed=9):
+                 weather_period=210.0, storm_trigger=0.030, seed=9):
         super().__init__(width, height, fps)
         self.speed = float(speed)
         self.coverage = float(coverage)     # +opens more cloud, -clears sky
         self.weather_period = max(20.0, float(weather_period))
-        self.storm_period = max(40.0, float(storm_period))
-        self.storm_frac = np.clip(float(storm_frac), 0.0, 0.6)
+        # Cloud-density level at which the sky "breaks" into a storm.
+        # Raise it for rarer storms; set >1 to disable storms entirely.
+        self.storm_trigger = float(storm_trigger)
         xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
         yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
         self.xn, self.yn = np.meshgrid(xn, yn)
@@ -3505,47 +3505,48 @@ class PassingClouds(ProceduralAnimation):
         u = min(1.0, max(0.0, float(u)))
         return u * u * (3.0 - 2.0 * u)
 
-    def _storm_at(self, t):
-        """Storm envelope. Returns (S, sp, storm_len_s, epoch).
+    def _density_and_storm(self, t):
+        """Natural storm trigger: the slow weather driver (sine + coherent
+        noise drift) IS the cloud density. When density crosses
+        storm_trigger the sky breaks into a storm; the storm deepens while
+        density stays high and clears as the sky naturally thins. No
+        schedule - accumulation causes the storm.
 
-        Each storm_period epoch gets one storm at an irregular (hashed)
-        start and duration averaging storm_frac of the epoch. S ramps up
-        (clouds accumulate), holds, then clears; sp is 0..1 within the
-        storm, -1 outside it.
+        Returns (density_driver, S) where S is the storm envelope 0..1.
         """
-        if self.storm_frac <= 0.0:
-            return 0.0, -1.0, 1.0, 0
-        k = int(np.floor(t / self.storm_period))
-        u = t / self.storm_period - k
-        start = 0.12 + 0.45 * self._hash(k * 1.7 + 3.0)
-        dur = self.storm_frac * (0.8 + 0.6 * self._hash(k * 2.3 + 7.0))
-        if not (start <= u < start + dur):
-            return 0.0, -1.0, dur * self.storm_period, k
-        sp = (u - start) / dur
-        S = self._sstep(sp / 0.30) * (1.0 - self._sstep((sp - 0.70) / 0.30))
-        return S, sp, dur * self.storm_period, k
+        # Irregular slow drift sampled from the same coherent noise field.
+        x = np.array([[t * 0.006 + 13.7]], np.float32)
+        y = np.array([[4.2]], np.float32)
+        z = np.array([[t * 0.0037]], np.float32)
+        n1 = float(self.noise.sample(x, y, z)[0, 0])
+        n2 = float(self.noise.sample(x * 2.3 + 31.0, y + 8.0, z * 1.7)[0, 0])
+        drift = 0.65 * n1 + 0.35 * n2                  # 0..1, slow, irregular
+        d = 0.06 * np.sin(2.0 * np.pi * t / self.weather_period) \
+            + 0.11 * (drift - 0.5) + self.coverage
+        S = self._sstep((d - self.storm_trigger) / 0.045)
+        return d, S
 
     def generate_frame(self, time):
         t = float(time) * self.speed
         frame = self.sky.copy()
 
-        # Storm envelope: 0 for ~80% of the time (identical to normal),
-        # rising as clouds accumulate, holding, then clearing.
-        S, sp, storm_len, epoch = self._storm_at(t)
+        # Natural storm trigger: when the slow density driver crosses the
+        # trigger level, the sky breaks. S deepens with density and clears
+        # as the sky thins - accumulation CAUSES the storm.
+        d, S = self._density_and_storm(t)
 
         if S > 0.0:
-            # Sky dims toward dark slate as the storm builds.
-            slate = np.array([24, 30, 44], np.float32)
-            frame = frame * (1.0 - 0.7 * S) + slate[None, None] * (0.7 * S)
-            # Bruise field: slow green-grey patches ("here or there").
+            # Sky deepens toward dark slate as the storm builds.
+            slate = np.array([14, 18, 30], np.float32)
+            frame = frame * (1.0 - 0.75 * S) + slate[None, None] * (0.75 * S)
+            # Bruise field: slow green-grey patches, deepest in dark masses.
             bf = _fbm(self.noise, self.xn * 1.3 + t * 0.008 + 77.0,
                       self.yn * 1.3 + 77.0, t * 0.003, 2)
-            bruise = np.clip((bf - 0.48) / 0.18, 0.0, 1.0) * S
+            bruise = np.clip((bf - 0.46) / 0.18, 0.0, 1.0) * S
 
-        # Weather: slow sinusoidal coverage swing, sparse <-> broken sky.
-        # The storm piles on extra coverage as it builds.
-        weather = 0.06 * np.sin(2.0 * np.pi * t / self.weather_period) \
-            + self.coverage + 0.16 * S
+        # Coverage: slow weather density + storm self-intensification
+        # (a breaking sky piles on more cloud).
+        weather = d + 0.15 * S
 
         acc_a = None
         for li, (scale, vx, cov, amax, feather, lightk, col) in \
@@ -3577,39 +3578,58 @@ class PassingClouds(ProceduralAnimation):
                 np.array([150, 162, 185], np.float32)[None, None] * shadow
 
             if S > 0.0:
-                # Grey-out: overcast light is flat - clouds go grey and
-                # lose their sunlit contrast as the storm deepens.
-                lit_flat = np.clip(lit, 0.80, 1.06)
-                grey = np.array([122, 126, 134], np.float32)[None, None] * \
-                    lit_flat[..., None]
-                cloud = cloud * (1.0 - 0.8 * S) + grey * (0.8 * S)
-                # Deep green bruises here and there in the cloud mass.
-                bm = (bruise * 0.65)[..., None]
+                # THUNDERHEADS: don't flatten to grey - deepen the contrast.
+                # Dense, shadowed pockets plunge toward dark storm grey
+                # while the sunlit crowns STAY bright white and fluffy.
+                depth = np.clip((cf - thr) * 2.4, 0.0, 1.0)
+                dark_mix = np.clip(S * depth * np.clip(1.15 - lit, 0.0, 1.0),
+                                   0.0, 0.85)[..., None]
+                cloud = cloud * (1.0 - dark_mix) + \
+                    np.array([50, 54, 66], np.float32)[None, None] * dark_mix
+                # Crowns dim only slightly - the fluff survives the storm.
+                cloud *= (1.0 - 0.10 * S)
+                # Deep green bruises, sunk into the dark cloud masses.
+                bm = (bruise * depth * 0.8)[..., None]
                 cloud = cloud * (1.0 - bm) + \
-                    np.array([46, 88, 54], np.float32)[None, None] * bm
+                    np.array([38, 78, 46], np.float32)[None, None] * bm
 
             a3 = a[..., None]
             frame = frame * (1.0 - a3) + cloud * a3
             acc_a = a if acc_a is None else np.maximum(acc_a, a)
 
-        # Lightning: a couple of cloud-lit flashes near the storm's peak.
-        # Deterministic per-epoch times/positions; each is a double strike.
-        if S > 0.05 and sp >= 0.0:
-            n_flash = 2 + (1 if self._hash(epoch * 3.1 + 11.0) > 0.5 else 0)
-            for i in range(n_flash):
-                fp = 0.42 + 0.45 * self._hash(epoch * 5.7 + i * 13.3)
-                dt = (sp - fp) * storm_len          # seconds since strike
-                if not (0.0 <= dt < 0.7):
-                    continue
-                env = np.exp(-dt / 0.09)
-                if dt > 0.12:                        # second flicker
-                    env += 0.7 * np.exp(-(dt - 0.12) / 0.07)
-                fx = self._hash(epoch * 7.9 + i * 17.7) * (self.width - 1)
-                gw = np.exp(-((np.arange(self.width, dtype=np.float32) - fx)
-                              ** 2) / (2.0 * (0.28 * self.width) ** 2))
-                lift = (0.30 + 0.70 * acc_a) * gw[None, :] * float(env) * S
-                frame += np.array([232, 238, 255], np.float32)[None, None] * \
-                    (lift * 0.9)[..., None]
+        # Lightning: dramatic MOVING bright-white flashes. While the storm
+        # is at strength, hashed 4-second slots each may fire a strike whose
+        # flash center CRAWLS across the sky (cloud-to-cloud), with a main
+        # pulse, a flicker, and a dying afterglow.
+        if S > 0.5:
+            slot = int(t / 4.0)
+            if self._hash(slot * 9.1 + 2.0) < 0.45:
+                dt = t - slot * 4.0
+                if dt < 0.9:
+                    env = np.exp(-dt / 0.10)
+                    if dt > 0.16:
+                        env += 0.85 * np.exp(-(dt - 0.16) / 0.06)
+                    if dt > 0.34:
+                        env += 0.45 * np.exp(-(dt - 0.34) / 0.10)
+                    # Start on one side, sweep INTO the panel so the crawl
+                    # stays visible for the whole strike.
+                    fx0 = (0.15 + 0.55 * self._hash(slot * 4.3 + 1.0)) * \
+                        (self.width - 1)
+                    direction = 1.0 if fx0 < (self.width - 1) * 0.5 else -1.0
+                    travel = direction * (0.35 + 0.30 *
+                                          self._hash(slot * 6.7 + 5.0)) * \
+                        self.width
+                    fx = fx0 + travel * (dt / 0.9)   # the flash MOVES
+                    gw = np.exp(-((np.arange(self.width, dtype=np.float32)
+                                   - fx) ** 2)
+                                / (2.0 * (0.20 * self.width) ** 2))
+                    lift = (0.30 + 0.70 * acc_a) * gw[None, :] * \
+                        float(env) * S * 1.5
+                    frame += np.array([255, 255, 255], np.float32)[None, None] * \
+                        lift[..., None]
+                    # Faint whole-sky sympathetic glow.
+                    frame += np.array([200, 210, 255], np.float32)[None, None] * \
+                        (float(env) * S * 0.10)
 
         return np.clip(frame, 0.0, 255.0).astype(np.float32)
 
