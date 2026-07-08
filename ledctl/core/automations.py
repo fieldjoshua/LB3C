@@ -3478,11 +3478,14 @@ class PassingClouds(ProceduralAnimation):
     ]
 
     def __init__(self, width, height, fps=30, speed=1.0, coverage=0.0,
-                 weather_period=210.0, seed=9):
+                 weather_period=210.0, storm_period=300.0, storm_frac=0.20,
+                 seed=9):
         super().__init__(width, height, fps)
         self.speed = float(speed)
         self.coverage = float(coverage)     # +opens more cloud, -clears sky
         self.weather_period = max(20.0, float(weather_period))
+        self.storm_period = max(40.0, float(storm_period))
+        self.storm_frac = np.clip(float(storm_frac), 0.0, 0.6)
         xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
         yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
         self.xn, self.yn = np.meshgrid(xn, yn)
@@ -3491,14 +3494,60 @@ class PassingClouds(ProceduralAnimation):
         self.sky = np.broadcast_to(
             self.SKY, (height, width, 3)).astype(np.float32).copy()
 
+    @staticmethod
+    def _hash(k):
+        """Deterministic irregular value in [0,1) from an index (no RNG)."""
+        v = np.sin(float(k) * 12.9898) * 43758.5453
+        return float(v - np.floor(v))
+
+    @staticmethod
+    def _sstep(u):
+        u = min(1.0, max(0.0, float(u)))
+        return u * u * (3.0 - 2.0 * u)
+
+    def _storm_at(self, t):
+        """Storm envelope. Returns (S, sp, storm_len_s, epoch).
+
+        Each storm_period epoch gets one storm at an irregular (hashed)
+        start and duration averaging storm_frac of the epoch. S ramps up
+        (clouds accumulate), holds, then clears; sp is 0..1 within the
+        storm, -1 outside it.
+        """
+        if self.storm_frac <= 0.0:
+            return 0.0, -1.0, 1.0, 0
+        k = int(np.floor(t / self.storm_period))
+        u = t / self.storm_period - k
+        start = 0.12 + 0.45 * self._hash(k * 1.7 + 3.0)
+        dur = self.storm_frac * (0.8 + 0.6 * self._hash(k * 2.3 + 7.0))
+        if not (start <= u < start + dur):
+            return 0.0, -1.0, dur * self.storm_period, k
+        sp = (u - start) / dur
+        S = self._sstep(sp / 0.30) * (1.0 - self._sstep((sp - 0.70) / 0.30))
+        return S, sp, dur * self.storm_period, k
+
     def generate_frame(self, time):
         t = float(time) * self.speed
         frame = self.sky.copy()
 
-        # Weather: slow sinusoidal coverage swing, sparse <-> broken sky.
-        weather = 0.06 * np.sin(2.0 * np.pi * t / self.weather_period) \
-            + self.coverage
+        # Storm envelope: 0 for ~80% of the time (identical to normal),
+        # rising as clouds accumulate, holding, then clearing.
+        S, sp, storm_len, epoch = self._storm_at(t)
 
+        if S > 0.0:
+            # Sky dims toward dark slate as the storm builds.
+            slate = np.array([24, 30, 44], np.float32)
+            frame = frame * (1.0 - 0.7 * S) + slate[None, None] * (0.7 * S)
+            # Bruise field: slow green-grey patches ("here or there").
+            bf = _fbm(self.noise, self.xn * 1.3 + t * 0.008 + 77.0,
+                      self.yn * 1.3 + 77.0, t * 0.003, 2)
+            bruise = np.clip((bf - 0.48) / 0.18, 0.0, 1.0) * S
+
+        # Weather: slow sinusoidal coverage swing, sparse <-> broken sky.
+        # The storm piles on extra coverage as it builds.
+        weather = 0.06 * np.sin(2.0 * np.pi * t / self.weather_period) \
+            + self.coverage + 0.16 * S
+
+        acc_a = None
         for li, (scale, vx, cov, amax, feather, lightk, col) in \
                 enumerate(self.LAYERS):
             off = 31.0 * li
@@ -3527,8 +3576,40 @@ class PassingClouds(ProceduralAnimation):
             cloud = cloud * (1.0 - shadow) + \
                 np.array([150, 162, 185], np.float32)[None, None] * shadow
 
+            if S > 0.0:
+                # Grey-out: overcast light is flat - clouds go grey and
+                # lose their sunlit contrast as the storm deepens.
+                lit_flat = np.clip(lit, 0.80, 1.06)
+                grey = np.array([122, 126, 134], np.float32)[None, None] * \
+                    lit_flat[..., None]
+                cloud = cloud * (1.0 - 0.8 * S) + grey * (0.8 * S)
+                # Deep green bruises here and there in the cloud mass.
+                bm = (bruise * 0.65)[..., None]
+                cloud = cloud * (1.0 - bm) + \
+                    np.array([46, 88, 54], np.float32)[None, None] * bm
+
             a3 = a[..., None]
             frame = frame * (1.0 - a3) + cloud * a3
+            acc_a = a if acc_a is None else np.maximum(acc_a, a)
+
+        # Lightning: a couple of cloud-lit flashes near the storm's peak.
+        # Deterministic per-epoch times/positions; each is a double strike.
+        if S > 0.05 and sp >= 0.0:
+            n_flash = 2 + (1 if self._hash(epoch * 3.1 + 11.0) > 0.5 else 0)
+            for i in range(n_flash):
+                fp = 0.42 + 0.45 * self._hash(epoch * 5.7 + i * 13.3)
+                dt = (sp - fp) * storm_len          # seconds since strike
+                if not (0.0 <= dt < 0.7):
+                    continue
+                env = np.exp(-dt / 0.09)
+                if dt > 0.12:                        # second flicker
+                    env += 0.7 * np.exp(-(dt - 0.12) / 0.07)
+                fx = self._hash(epoch * 7.9 + i * 17.7) * (self.width - 1)
+                gw = np.exp(-((np.arange(self.width, dtype=np.float32) - fx)
+                              ** 2) / (2.0 * (0.28 * self.width) ** 2))
+                lift = (0.30 + 0.70 * acc_a) * gw[None, :] * float(env) * S
+                frame += np.array([232, 238, 255], np.float32)[None, None] * \
+                    (lift * 0.9)[..., None]
 
         return np.clip(frame, 0.0, 255.0).astype(np.float32)
 
