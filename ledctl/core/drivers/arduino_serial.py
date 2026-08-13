@@ -300,8 +300,14 @@ class ArduinoSerialDevice(OutputDevice):
             try:
                 self._ser.write(buf)
             except serial.SerialTimeoutException:
-                logger.warning("Serial write timed out; flushing and continuing")
-                self._ser.reset_output_buffer()
+                # Do NOT flush here. reset_output_buffer() would discard the
+                # tail of a half-sent frame, leaving the Arduino stuck
+                # mid-parse - it then consumes the NEXT frame's bytes as this
+                # frame's pixel data and paints garbage (random full-panel
+                # flashes) until it happens to resync. Letting the queued
+                # bytes drain keeps the stream frame-aligned.
+                logger.warning("Serial write timed out; letting buffer drain "
+                               "to keep the frame stream aligned")
 
     def _send_black(self) -> None:
         if not self._ser:
