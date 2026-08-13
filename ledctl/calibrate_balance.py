@@ -65,7 +65,7 @@ def fine_candidates(base, step):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--mode", choices=["split", "coarse", "fine"],
+    ap.add_argument("--mode", choices=["split", "coarse", "fine", "static"],
                     default="coarse")
     ap.add_argument("--split", type=int, default=50,
                     help="LED index where the second batch starts (default 50)")
@@ -138,6 +138,51 @@ def main() -> int:
         }
     })
     dev.open()
+
+    # STATIC mode: latch one frame, then stop transmitting entirely.
+    # WS2811 chips hold their last value with no data, so anything that
+    # still moves after this cannot be caused by the data path - it is
+    # power or the LEDs themselves. This separates "refresh/signal
+    # integrity" from "hardware" definitively.
+    if args.mode == "static":
+        try:
+            base = tuple(float(v) for v in args.around.split(","))
+            if len(base) != 3:
+                raise ValueError
+        except ValueError:
+            base = (1.0, 1.0, 1.0)
+        table = [(1.0, 1.0, 1.0)] * count
+        lo, hi = (split, count) if args.target == "second" else (0, split)
+        for j in range(lo, hi):
+            table[j] = base
+        dev.balance = table
+        lvl = max(0, min(255, args.level))
+        grey = [(lvl, lvl, lvl)] * (args.width * args.height)
+        print(f"latching grey {lvl} with gains R={base[0]:.2f} "
+              f"G={base[1]:.2f} B={base[2]:.2f} on LEDs {lo}-{hi - 1} ...")
+        for _ in range(5):                 # a few frames to be certain
+            dev.draw_rgb_frame(args.width, args.height, grey)
+            time.sleep(0.05)
+        print("\n*** TRANSMISSION STOPPED - no more data is being sent. ***")
+        print("Watch the panel for 30s:")
+        print("  flicker STOPS     -> the data/refresh path is the cause")
+        print("  flicker CONTINUES -> power or the LEDs themselves\n")
+        try:
+            time.sleep(30.0)
+        except KeyboardInterrupt:
+            pass
+        print("done - the strip keeps its last value until you Ctrl-C.")
+        try:
+            input("press Enter to blank the strip and exit...")
+        except (EOFError, KeyboardInterrupt):
+            pass
+        try:
+            dev.draw_rgb_frame(args.width, args.height,
+                               [(0, 0, 0)] * (args.width * args.height))
+        except Exception:
+            pass
+        dev.close()
+        return 0
 
     stop = {"v": False}
     signal.signal(signal.SIGINT, lambda *a: stop.__setitem__("v", True))

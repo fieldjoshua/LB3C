@@ -88,8 +88,6 @@ void setup() {
 }
 
 static inline void onFrameComplete() {
-  diag_state = !diag_state;
-  digitalWrite(DIAG_PIN, diag_state ? HIGH : LOW);
   last_frame_ms = millis();
 }
 
