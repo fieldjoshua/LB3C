@@ -1403,6 +1403,9 @@ class FireworksShow(ProceduralAnimation):
         # Particle render sigma. Tuned so a single spark covers about half
         # an LED at the output resolution after supersample averaging.
         size_px = max(0.32, self._scale * 0.032)   # zoomed out
+        # Spawn shell radius: keeps particles off a single LED at
+        # burst time so they cannot sum into a white blob.
+        r0 = 0.85 * s
 
         # Speed scale: in pixels/sec at this resolution. Tuned so big bursts
         # cross most of the strip during their lifetime.
@@ -1413,7 +1416,8 @@ class FireworksShow(ProceduralAnimation):
                 ang = (2 * np.pi * i / n) + self._rng.uniform(-0.07, 0.07)
                 spd = speed * self._rng.uniform(0.85, 1.15)
                 self._spawn_one(
-                    x=x, y=y, vx=spd * np.cos(ang), vy=spd * np.sin(ang),
+                    x=x + np.cos(ang) * r0, y=y + np.sin(ang) * r0,
+                    vx=spd * np.cos(ang), vy=spd * np.sin(ang),
                     life=self._rng.uniform(1.2, 1.8),
                     hue=(hue + self._rng.uniform(-0.02, 0.02)) % 1.0,
                     sat=1.0, size=size_px, kind=self.K_SPARK,
@@ -1425,7 +1429,8 @@ class FireworksShow(ProceduralAnimation):
                 ang = (2 * np.pi * i / n) + self._rng.uniform(-0.05, 0.05)
                 spd = speed * self._rng.uniform(0.7, 1.3)
                 self._spawn_one(
-                    x=x, y=y, vx=spd * np.cos(ang), vy=spd * np.sin(ang),
+                    x=x + np.cos(ang) * r0, y=y + np.sin(ang) * r0,
+                    vx=spd * np.cos(ang), vy=spd * np.sin(ang),
                     life=self._rng.uniform(1.8, 2.6),
                     hue=(hue + self._rng.uniform(-0.04, 0.04)) % 1.0,
                     sat=1.0, size=size_px, kind=self.K_SPARK,
@@ -1454,7 +1459,8 @@ class FireworksShow(ProceduralAnimation):
                 ang = 2 * np.pi * i / n
                 spd = speed * (1.0 + self._rng.uniform(-jit, jit))
                 self._spawn_one(
-                    x=x, y=y, vx=spd * np.cos(ang), vy=spd * np.sin(ang),
+                    x=x + np.cos(ang) * r0, y=y + np.sin(ang) * r0,
+                    vx=spd * np.cos(ang), vy=spd * np.sin(ang),
                     life=self._rng.uniform(1.2, 1.6),
                     hue=hue, sat=1.0, size=size_px, kind=self.K_SPARK,
                 )
@@ -1467,7 +1473,8 @@ class FireworksShow(ProceduralAnimation):
                 ang = 2 * np.pi * i / n + self._rng.uniform(-0.04, 0.04)
                 spd = speed * self._rng.uniform(0.9, 1.1)
                 self._spawn_one(
-                    x=x, y=y, vx=spd * np.cos(ang), vy=spd * np.sin(ang),
+                    x=x + np.cos(ang) * r0, y=y + np.sin(ang) * r0,
+                    vx=spd * np.cos(ang), vy=spd * np.sin(ang),
                     life=seed_life,
                     hue=hue, sat=1.0, size=size_px * 1.2,
                     kind=self.K_CROSS_SEED, gmul=0.6,
@@ -1480,7 +1487,8 @@ class FireworksShow(ProceduralAnimation):
                 ang = 2 * np.pi * i / n + self._rng.uniform(-0.1, 0.1)
                 spd = speed * self._rng.uniform(0.7, 1.3)
                 self._spawn_one(
-                    x=x, y=y, vx=spd * np.cos(ang), vy=spd * np.sin(ang),
+                    x=x + np.cos(ang) * r0, y=y + np.sin(ang) * r0,
+                    vx=spd * np.cos(ang), vy=spd * np.sin(ang),
                     life=self._rng.uniform(1.4, 2.0),
                     hue=hue, sat=0.05, size=size_px,
                     kind=self.K_STROBE, gmul=0.9,
@@ -1604,12 +1612,12 @@ class FireworksShow(ProceduralAnimation):
             # Brightness profile per kind:
             if kind == self.K_TRACER:
                 # Bright nearly constant; slight fade near apex.
-                amp = 0.85 + 0.15 * (1.0 - life_frac)
+                amp = 0.20 + 0.06 * (1.0 - life_frac)
                 hue = float(self.phue[i])
                 sat = float(self.psat[i])
             elif kind == self.K_SPARK:
                 # Quick bright flash, fades to dim ember.
-                amp = life_frac * (0.7 + 0.3 * (1.0 - life_frac))
+                amp = life_frac * (0.42 + 0.18 * (1.0 - life_frac))
                 hue = float(self.phue[i])
                 sat = float(self.psat[i])
             elif kind == self.K_HEAVY:
@@ -1624,7 +1632,7 @@ class FireworksShow(ProceduralAnimation):
             elif kind == self.K_STROBE:
                 # Rapid on/off flicker via fast sine on remaining life.
                 flicker = 0.5 + 0.5 * np.sin(life_frac * 60.0)
-                amp = life_frac * flicker
+                amp = life_frac * flicker * 0.55
                 hue = float(self.phue[i])
                 sat = 0.05
             else:
@@ -1658,7 +1666,21 @@ class FireworksShow(ProceduralAnimation):
         """Composite the land OVER the particles so sparks that fall past
         the horizon disappear behind it instead of drawing on top of it.
         The land is opaque (near-black) with a warm rim right at the
-        horizon line, which reads as distant ground catching the glow."""
+        horizon line, which reads as distant ground catching the glow.
+
+        Also applies a filmic highlight rolloff first: additive sparks
+        routinely sum past 255 where a burst is dense, and a hard clip turns
+        those cores flat white and throws the colour away. Compressing
+        highlights asymptotically keeps dense cores bright AND coloured."""
+        # Hue-preserving soft knee. Below `knee` nothing is touched (so dim
+        # tracers stay dim); above it the pixel's PEAK channel is compressed
+        # asymptotically and all three channels are scaled together, so a
+        # dense core gets brighter without sliding to flat white.
+        knee = 170.0
+        m = frame.max(axis=2, keepdims=True)
+        comp = knee + (255.0 - knee) * (1.0 - np.exp(-(m - knee)
+                                                     / (255.0 - knee)))
+        frame = frame * np.where(m > knee, comp / np.maximum(m, 1e-6), 1.0)
         land = self.yy >= self.horizon_y            # opaque ground mask
         if land.any():
             frame[land] = 0.0
