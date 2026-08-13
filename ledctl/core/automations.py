@@ -1304,7 +1304,7 @@ class FireworksShow(ProceduralAnimation):
 
     def __init__(self, width: int, height: int, fps: float = 30,
                  show_duration: float = 60.0,
-                 horizon_y: float = 0.92,
+                 horizon_y: float = 0.96,
                  seed: int = 7):
         super().__init__(width, height, fps)
         self._scale = float(min(width, height))
@@ -1388,7 +1388,7 @@ class FireworksShow(ProceduralAnimation):
         vy0 = -np.sqrt(2.0 * self.g * dy)
         t_apex = -vy0 / self.g
         # Tracer is small - target ~half an LED at the output resolution.
-        tracer_size = max(0.4, self._scale * 0.025)
+        tracer_size = max(0.25, self._scale * 0.025)  # ~half a pixel
         self._spawn_one(
             x=x0, y=self.horizon_y, vx=0.0, vy=vy0, life=t_apex,
             hue=0.13, sat=0.30, size=tracer_size,
@@ -1402,13 +1402,13 @@ class FireworksShow(ProceduralAnimation):
         s = self._scale / 80.0
         # Particle render sigma. Tuned so a single spark covers about half
         # an LED at the output resolution after supersample averaging.
-        size_px = max(0.5, self._scale * 0.045)
+        size_px = max(0.32, self._scale * 0.032)   # zoomed out
 
         # Speed scale: in pixels/sec at this resolution. Tuned so big bursts
         # cross most of the strip during their lifetime.
         if kind == 'peony':
             n = 24
-            speed = self._rng.uniform(18.0, 26.0) * s * size_mul
+            speed = self._rng.uniform(12.0,17.0) * s * size_mul
             for i in range(n):
                 ang = (2 * np.pi * i / n) + self._rng.uniform(-0.07, 0.07)
                 spd = speed * self._rng.uniform(0.85, 1.15)
@@ -1420,7 +1420,7 @@ class FireworksShow(ProceduralAnimation):
                 )
         elif kind == 'chrysanthemum':
             n = 30
-            speed = self._rng.uniform(20.0, 32.0) * s * size_mul
+            speed = self._rng.uniform(13.0,21.0) * s * size_mul
             for i in range(n):
                 ang = (2 * np.pi * i / n) + self._rng.uniform(-0.05, 0.05)
                 spd = speed * self._rng.uniform(0.7, 1.3)
@@ -1432,7 +1432,7 @@ class FireworksShow(ProceduralAnimation):
                 )
         elif kind == 'willow':
             n = 22
-            speed = self._rng.uniform(15.0, 22.0) * s * size_mul
+            speed = self._rng.uniform(10.0,15.0) * s * size_mul
             for i in range(n):
                 ang = (2 * np.pi * i / n) + self._rng.uniform(-0.06, 0.06)
                 # Bias velocity slightly upward so droops feel right.
@@ -1448,7 +1448,7 @@ class FireworksShow(ProceduralAnimation):
                 )
         elif kind == 'ring':
             n = 28
-            speed = self._rng.uniform(22.0, 30.0) * s * size_mul
+            speed = self._rng.uniform(14.5,20.0) * s * size_mul
             jit = 0.05
             for i in range(n):
                 ang = 2 * np.pi * i / n
@@ -1461,7 +1461,7 @@ class FireworksShow(ProceduralAnimation):
         elif kind == 'crossette':
             # Big slow seeds that split into mini-bursts after ~0.6s.
             n = 8
-            speed = self._rng.uniform(16.0, 22.0) * s * size_mul
+            speed = self._rng.uniform(10.5,14.5) * s * size_mul
             seed_life = self._rng.uniform(0.5, 0.8)
             for i in range(n):
                 ang = 2 * np.pi * i / n + self._rng.uniform(-0.04, 0.04)
@@ -1475,7 +1475,7 @@ class FireworksShow(ProceduralAnimation):
                 )
         elif kind == 'strobe':
             n = 14
-            speed = self._rng.uniform(10.0, 16.0) * s * size_mul
+            speed = self._rng.uniform(6.5,10.5) * s * size_mul
             for i in range(n):
                 ang = 2 * np.pi * i / n + self._rng.uniform(-0.1, 0.1)
                 spd = speed * self._rng.uniform(0.7, 1.3)
@@ -1590,29 +1590,9 @@ class FireworksShow(ProceduralAnimation):
     def _render(self) -> np.ndarray:
         frame = np.zeros((self.height, self.width, 3), dtype=np.float32)
 
-        # Horizon: dim warm glow on the bottom-most row(s). Acts as a
-        # "ground line" the tracers launch from. Always visible so the
-        # show has a sense of place even between bursts.
-        h_row = int(round(self.horizon_y))
-        if 0 <= h_row < self.height:
-            # Hot-orange glow that's brightest on the horizon row and
-            # falls off above it within ~1.5 LEDs.
-            band = max(1.0, self._scale * 0.04)
-            dy = self.yy - self.horizon_y
-            base = np.clip(np.exp(-(dy * dy) / (2.0 * band * band)), 0.0, 1.0)
-            # Only on/below the horizon line (don't bleed too far up).
-            base = np.where(self.yy >= self.horizon_y - band * 1.2, base, 0.0)
-            # Warm dim color: hue ~0.05 (orange), low sat for dusky feel.
-            h_field = np.full_like(base, 0.05, dtype=np.float32)
-            s_field = np.full_like(base, 0.55, dtype=np.float32)
-            v_field = (base * 0.18).astype(np.float32)  # dim
-            frame += _hsv_to_rgb_array(
-                h_field.astype(np.float32), s_field, v_field
-            ).astype(np.float32)
-
         alive = np.where(self.plife > 0.0)[0]
         if alive.size == 0:
-            return np.clip(frame, 0.0, 255.0).astype(np.uint8)
+            return np.clip(self._draw_land(frame), 0.0, 255.0).astype(np.uint8)
 
         for i in alive:
             x = float(self.px[i]); y = float(self.py[i])
@@ -1672,7 +1652,22 @@ class FireworksShow(ProceduralAnimation):
             rgb = _hsv_to_rgb_array(h, s, g.astype(np.float32)).astype(np.float32)
             frame[y0:y1, x0:x1] += rgb
 
-        return np.clip(frame, 0.0, 255.0).astype(np.uint8)
+        return np.clip(self._draw_land(frame), 0.0, 255.0).astype(np.uint8)
+
+    def _draw_land(self, frame):
+        """Composite the land OVER the particles so sparks that fall past
+        the horizon disappear behind it instead of drawing on top of it.
+        The land is opaque (near-black) with a warm rim right at the
+        horizon line, which reads as distant ground catching the glow."""
+        land = self.yy >= self.horizon_y            # opaque ground mask
+        if land.any():
+            frame[land] = 0.0
+            # Warm rim on the topmost land row only - the lit horizon edge.
+            rim = np.abs(self.yy - self.horizon_y) < 0.75
+            rim &= land
+            if rim.any():
+                frame[rim] = np.array([46, 20, 8], np.float32)
+        return frame
 
     # ---- Frame entry point ----------------------------------------------
 
