@@ -3738,6 +3738,164 @@ class NightClouds(ProceduralAnimation):
         return np.clip(frame, 0.0, 255.0).astype(np.float32)
 
 
+class DayToNight(ProceduralAnimation):
+    """One continuous sky: blue day -> golden hour -> dusk -> moonlit night.
+
+    The same cloud field drifts through the entire arc - no scene cuts. What
+    changes is the LIGHT, exactly as it does outdoors:
+
+      day        sun high: clouds lit white from above, deep blue sky,
+                 self-shadowed bellies (passing_clouds behaviour)
+      golden     sun low: light warms and comes in at a shallow angle, so
+                 the lighting gradient rotates from overhead to sideways
+                 and cloud tops turn gold
+      dusk       sun below the horizon: clouds are UNDERLIT crimson/magenta
+                 while the sky deepens through violet - the sun is gone but
+                 its light still reaches the cloud bases
+      night      sun contributes nothing; the moon (hard 4-LED corner block)
+                 fades up as the only source, and clouds become visible only
+                 by proximity to it, with the density gate producing silver
+                 rims and dark hearts (night_clouds behaviour)
+
+    Sun and moon crossfade as light sources, so nothing pops - at any instant
+    the frame is a physically coherent blend of the two.
+    """
+
+    # Sky colour keyframes across the cycle phase.
+    SKY_KEYS = [
+        (0.00, (10, 24, 72)),      # deep blue day
+        (0.42, (16, 32, 82)),      # day holding
+        (0.56, (46, 40, 86)),      # sun low, sky warming at depth
+        (0.66, (34, 20, 54)),      # dusk violet
+        (0.76, (8, 8, 24)),        # last light
+        (0.84, (0, 0, 0)),         # night: black
+        (0.96, (0, 0, 0)),         # night holding
+        (1.00, (10, 24, 72)),      # dawn snap back to blue
+    ]
+    # Sunlight colour as the sun descends.
+    SUN_KEYS = [
+        (0.00, (252, 252, 254)),   # white midday
+        (0.46, (255, 236, 200)),   # warming
+        (0.56, (255, 176, 96)),    # golden hour
+        (0.64, (238, 96, 84)),     # low crimson
+        (0.72, (150, 44, 78)),     # last underlit magenta
+        (0.80, (40, 14, 30)),      # gone
+        (1.00, (252, 252, 254)),
+    ]
+    MOONLIGHT = np.array([205, 218, 245], np.float32)
+    MOON = np.array([240, 244, 252], np.float32)
+
+    # (scale, x-speed, coverage, max alpha, feather, light strength)
+    LAYERS = [
+        (3.0, 0.012, 0.62, 0.55, 0.20, 2.4),   # far
+        (1.6, 0.052, 0.56, 1.00, 0.13, 4.2),   # near
+    ]
+
+    def __init__(self, width, height, fps=30, speed=1.0, coverage=0.0,
+                 cycle_seconds=420.0, moon_reach=0.26, density_gate=0.06,
+                 gate_feather=0.12, corner=-1, inset=1, seed=9):
+        super().__init__(width, height, fps)
+        self.speed = float(speed)
+        self.coverage = float(coverage)
+        self.cycle = max(30.0, float(cycle_seconds))
+        self.gate = float(density_gate)
+        self.gate_feather = max(0.03, float(gate_feather))
+        self._scale = float(min(width, height))
+        xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
+        yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
+        self.xn, self.yn = np.meshgrid(xn, yn)
+        xx, yy = np.meshgrid(np.arange(width, dtype=np.float32),
+                             np.arange(height, dtype=np.float32))
+        self.noise = _ValueNoise3D(16, seed)
+
+        # Moon: hard 2x2 block in a corner (same as night_clouds).
+        ci = int(corner)
+        if ci < 0:
+            ci = int(PassingClouds._hash(seed * 7.3 + 4.0) * 4) % 4
+        ins = max(0, int(inset))
+        mx = (ins + 0.5) if ci in (0, 2) else (width - 2 - ins) + 0.5
+        my = (ins + 0.5) if ci in (0, 1) else (height - 2 - ins) + 0.5
+        d2m = (xx - mx) ** 2 + (yy - my) ** 2
+        self.moon_mask = (np.sqrt(d2m) <= 0.9).astype(np.float32)
+        reach = max(1.6, float(moon_reach) * self._scale)
+        self.ill = np.exp(-d2m / (2.0 * reach ** 2)).astype(np.float32)
+
+    @staticmethod
+    def _key(keys, ph):
+        for i in range(len(keys) - 1):
+            p0, c0 = keys[i]
+            p1, c1 = keys[i + 1]
+            if p0 <= ph <= p1:
+                u = (ph - p0) / max(1e-6, p1 - p0)
+                u = u * u * (3.0 - 2.0 * u)
+                return (np.array(c0, np.float32) * (1 - u)
+                        + np.array(c1, np.float32) * u)
+        return np.array(keys[-1][1], np.float32)
+
+    def generate_frame(self, time):
+        t = float(time) * self.speed
+        ph = (t / self.cycle) % 1.0
+
+        # Light-source weights: the sun sets, the moon takes over, and the
+        # sun ramps back up before the wrap so dawn is continuous (not a cut).
+        sun = min(1.0, (1.0 - PassingClouds._sstep((ph - 0.50) / 0.28))
+                  + PassingClouds._sstep((ph - 0.95) / 0.05))
+        moon = PassingClouds._sstep((ph - 0.72) / 0.12) * \
+            (1.0 - PassingClouds._sstep((ph - 0.97) / 0.03))
+        sun_col = self._key(self.SUN_KEYS, ph)
+        # Sun elevation drives the lighting DIRECTION: overhead at midday,
+        # shallow/sideways at golden hour, from below at dusk.
+        elev = (1.0 - 2.2 * PassingClouds._sstep((ph - 0.44) / 0.30)
+                + 2.2 * PassingClouds._sstep((ph - 0.95) / 0.05))
+
+        frame = np.broadcast_to(self._key(self.SKY_KEYS, ph),
+                                (self.height, self.width, 3)).astype(np.float32).copy()
+        frame += self.MOON[None, None] * (self.moon_mask * moon)[..., None]
+
+        weather = 0.05 * np.sin(2.0 * np.pi * t / 210.0) + self.coverage
+
+        for li, (scale, vx, cov, amax, feather, lightk) in \
+                enumerate(self.LAYERS):
+            off = 47.0 * li
+            cf = _fbm(self.noise,
+                      self.xn * scale + t * vx + off,
+                      self.yn * (scale * 0.9) + off,
+                      t * 0.004, octaves=4)
+            thr = cov - weather
+            a = np.clip((cf - thr) / feather, 0.0, 1.0) * amax
+
+            # Anti-light halo (daytime only - needs a lit sky to bite).
+            if sun > 0.02:
+                halo = np.clip((cf - (thr - 0.10)) / 0.10, 0.0, 1.0) - \
+                    np.clip((cf - thr) / 0.04, 0.0, 1.0)
+                frame *= (1.0 - np.clip(halo, 0.0, 1.0)[..., None]
+                          * 0.12 * sun)
+
+            gy, gx = np.gradient(cf)
+            # SUN component: the gradient term's sign follows elevation, so
+            # as the sun sets the bright side migrates from cloud tops to
+            # cloud bases (underlit dusk).
+            lit_sun = np.clip(1.0 + lightk * (gy * 3.0 * elev + gx * 1.0),
+                              0.30, 1.35)
+            cloud_sun = sun_col[None, None] * lit_sun[..., None]
+            shadow = np.clip(1.0 - lit_sun, 0.0, 0.45)[..., None]
+            fill = np.array([150, 162, 185], np.float32) * \
+                (0.35 + 0.65 * sun)
+            cloud_sun = cloud_sun * (1.0 - shadow) + fill[None, None] * shadow
+
+            # MOON component: proximity light through the density gate.
+            u = np.clip((cf - (thr + self.gate)) / self.gate_feather, 0.0, 1.0)
+            trans = 1.0 - u * u * (3.0 - 2.0 * u)
+            lit_moon = np.minimum(self.ill * trans, 0.85)[..., None]
+            cloud_moon = self.MOONLIGHT[None, None] * lit_moon
+
+            cloud = cloud_sun * sun + cloud_moon * moon
+            a3 = a[..., None]
+            frame = frame * (1.0 - a3) + cloud * a3
+
+        return np.clip(frame, 0.0, 255.0).astype(np.float32)
+
+
 # Registry of available automations
 AUTOMATION_REGISTRY = {
     'color_wave': ColorWave,
@@ -3784,6 +3942,7 @@ AUTOMATION_REGISTRY = {
     'silent_disco': SilentDisco,
     'passing_clouds': PassingClouds,
     'night_clouds': NightClouds,
+    'day_to_night': DayToNight,
 }
 
 
