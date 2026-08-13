@@ -109,6 +109,13 @@ def main() -> int:
     ap.add_argument("--order", default="GRB", help="strip color order")
     ap.add_argument("--layout", default="serpentine",
                     choices=["serpentine", "linear"])
+    ap.add_argument("--balance", action="append", default=[],
+                    metavar="START:END:R,G,B",
+                    help="per-LED white-balance gains over an LED-index range, "
+                         "e.g. --balance 50:100:1.0,0.94,0.82 . Repeatable. "
+                         "Use this when a panel built from two strip batches "
+                         "shows different hues on grey/mixed colours (they "
+                         "match on saturated single-channel colours).")
 
     ap.add_argument("--no-dither", action="store_true",
                     help="disable sigma-delta dithering. Dithering is on by "
@@ -186,6 +193,22 @@ def main() -> int:
     anim = cls(args.width, args.height, fps=args.fps, **extra)
 
     count = args.count if args.count is not None else args.width * args.height
+
+    # Parse --balance START:END:R,G,B entries into (start, end, (r,g,b)).
+    balance_spec = []
+    for item in args.balance:
+        try:
+            start_s, end_s, gains_s = item.split(":")
+            gains = tuple(float(v) for v in gains_s.split(","))
+            if len(gains) != 3:
+                raise ValueError
+            balance_spec.append((int(start_s), int(end_s), gains))
+        except ValueError:
+            print(f"ignoring malformed --balance {item!r} "
+                  f"(need START:END:R,G,B)", file=sys.stderr)
+    if balance_spec:
+        print(f"white-balance calibration: {len(balance_spec)} range(s)")
+
     dev = ArduinoSerialDevice({
         "arduino": {
             "port": args.port,
@@ -195,6 +218,7 @@ def main() -> int:
             "count": count,
             "pixel_order": args.order,
             "layout": args.layout,
+            "balance": balance_spec,
         }
     })
 
