@@ -1301,6 +1301,7 @@ class FireworksShow(ProceduralAnimation):
     K_HEAVY = 2        # willow - higher gravity, slower
     K_CROSS_SEED = 3   # crossette parent - splits when life expires
     K_STROBE = 4       # strobe spark - flashes via life modulation
+    K_FLASH = 5        # one-pixel white burst flash, very fast fade
 
     def __init__(self, width: int, height: int, fps: float = 30,
                  show_duration: float = 60.0,
@@ -1406,6 +1407,10 @@ class FireworksShow(ProceduralAnimation):
         # Spawn shell radius: keeps particles off a single LED at
         # burst time so they cannot sum into a white blob.
         r0 = 0.85 * s
+        # One-pixel white pop at the burst point.
+        self._spawn_one(x=x, y=y, vx=0.0, vy=0.0, life=0.16,
+                        hue=0.13, sat=0.0, size=0.5,
+                        kind=self.K_FLASH, gmul=0.0)
 
         # Speed scale: in pixels/sec at this resolution. Tuned so big bursts
         # cross most of the strip during their lifetime.
@@ -1611,10 +1616,16 @@ class FireworksShow(ProceduralAnimation):
             life_frac = float(self.plife[i] / max(0.001, self.pmaxlife[i]))
             # Brightness profile per kind:
             if kind == self.K_TRACER:
-                # Bright nearly constant; slight fade near apex.
-                amp = 0.20 + 0.06 * (1.0 - life_frac)
+                # Brightest at launch, fading as it climbs.
+                amp = 0.06 + 0.26 * life_frac
                 hue = float(self.phue[i])
                 sat = float(self.psat[i])
+            elif kind == self.K_FLASH:
+                # One-pixel white pop at the instant of the burst.
+                # life_frac^3 => very fast decay.
+                amp = life_frac ** 3
+                hue = 0.13
+                sat = 0.0
             elif kind == self.K_SPARK:
                 # Quick bright flash, fades to dim ember.
                 amp = life_frac * (0.42 + 0.18 * (1.0 - life_frac))
@@ -1641,6 +1652,19 @@ class FireworksShow(ProceduralAnimation):
                 sat = float(self.psat[i])
 
             if amp < 0.02:
+                continue
+
+            # Tracers and the burst flash render as EXACTLY one LED with no
+            # Gaussian falloff - snapped to the nearest pixel. A sub-pixel
+            # Gaussian always bleeds across two LEDs; snapping is the only
+            # way to get a genuinely single-pixel point on this grid.
+            if kind in (self.K_TRACER, self.K_FLASH):
+                xi = int(round(x)); yi = int(round(y))
+                if 0 <= xi < self.width and 0 <= yi < self.height:
+                    hh = np.array([[hue]], dtype=np.float32)
+                    ss = np.array([[sat]], dtype=np.float32)
+                    vv = np.array([[min(1.0, amp)]], dtype=np.float32)
+                    frame[yi, xi] += _hsv_to_rgb_array(hh, ss, vv)[0, 0]
                 continue
 
             # Splat into a small bounding box only.
