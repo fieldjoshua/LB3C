@@ -15,6 +15,14 @@
 // Nano (ATmega328P) RAM budget: ~2 KB. Each LED costs 3 bytes + overhead,
 // so keep LED_COUNT <= ~500.
 
+// Let the UART interrupt fire while FastLED is driving the strip. Without
+// this, show() disables interrupts for ~3ms; at 500k baud up to 150 bytes
+// can arrive in that window but the 64-byte serial buffer overflows, so
+// bytes are LOST and the frame stream desyncs (random full-panel flashes).
+// FastLED detects an interrupt that disturbed bit timing and retries the
+// frame, so the cost is an occasional repeated frame instead of corruption.
+#define FASTLED_ALLOW_INTERRUPTS 1
+
 #include <FastLED.h>
 
 // ---- User config ---------------------------------------------------------
@@ -52,6 +60,7 @@ static uint16_t led_index = 0;
 static uint8_t  cur_r = 0, cur_g = 0;
 static uint8_t  hi = 0, lo = 0;
 
+static uint32_t last_byte_ms = 0;
 static uint32_t last_frame_ms = 0;
 static uint32_t last_heartbeat_ms = 0;
 static bool     diag_state = false;
@@ -95,9 +104,19 @@ static inline void tickHeartbeat() {
 
 void loop() {
   tickHeartbeat();
+
+  // Parser watchdog: if we are part-way through a frame and the stream
+  // stalls, abandon it and wait for a fresh magic word. Without this a
+  // single lost byte leaves the parser permanently misaligned - it eats
+  // the next frame's bytes as this frame's pixels and paints garbage.
+  if (state != WAIT_MAGIC_0 && (millis() - last_byte_ms) > 50) {
+    resetParser();
+  }
+
   while (Serial.available()) {
     int c = Serial.read();
     if (c < 0) break;
+    last_byte_ms = millis();
     uint8_t b = (uint8_t) c;
 
     switch (state) {
