@@ -1341,6 +1341,7 @@ class FireworksShow(ProceduralAnimation):
         self.p_burst_size = np.zeros(N, dtype=np.float32)
 
         self._last_t = 0.0
+        self._waves = []   # [x, y, t0] expanding dark shockwaves
         self._next_launch_t = 0.6
         self._show_t0 = 0.0
 
@@ -1403,10 +1404,13 @@ class FireworksShow(ProceduralAnimation):
         s = self._scale / 80.0
         # Particle render sigma. Tuned so a single spark covers about half
         # an LED at the output resolution after supersample averaging.
-        size_px = max(0.32, self._scale * 0.032)   # zoomed out
+        size_px = max(0.26, self._scale * 0.026)   # zoomed out further
         # Spawn shell radius: keeps particles off a single LED at
         # burst time so they cannot sum into a white blob.
         r0 = 0.85 * s
+        # Dark shockwave: an expanding black ring that sweeps out
+        # ahead of the sparks, so the colour emerges behind it.
+        self._waves.append([x, y, self._last_t])
         # One-pixel white pop at the burst point.
         self._spawn_one(x=x, y=y, vx=0.0, vy=0.0, life=0.16,
                         hue=0.13, sat=0.0, size=0.5,
@@ -1416,7 +1420,7 @@ class FireworksShow(ProceduralAnimation):
         # cross most of the strip during their lifetime.
         if kind == 'peony':
             n = 24
-            speed = self._rng.uniform(12.0,17.0) * s * size_mul
+            speed = self._rng.uniform(9.0,12.5) * s * size_mul
             for i in range(n):
                 ang = (2 * np.pi * i / n) + self._rng.uniform(-0.07, 0.07)
                 spd = speed * self._rng.uniform(0.85, 1.15)
@@ -1429,7 +1433,7 @@ class FireworksShow(ProceduralAnimation):
                 )
         elif kind == 'chrysanthemum':
             n = 30
-            speed = self._rng.uniform(13.0,21.0) * s * size_mul
+            speed = self._rng.uniform(9.5,15.5) * s * size_mul
             for i in range(n):
                 ang = (2 * np.pi * i / n) + self._rng.uniform(-0.05, 0.05)
                 spd = speed * self._rng.uniform(0.7, 1.3)
@@ -1442,7 +1446,7 @@ class FireworksShow(ProceduralAnimation):
                 )
         elif kind == 'willow':
             n = 22
-            speed = self._rng.uniform(10.0,15.0) * s * size_mul
+            speed = self._rng.uniform(7.5,11.0) * s * size_mul
             for i in range(n):
                 ang = (2 * np.pi * i / n) + self._rng.uniform(-0.06, 0.06)
                 # Bias velocity slightly upward so droops feel right.
@@ -1458,7 +1462,7 @@ class FireworksShow(ProceduralAnimation):
                 )
         elif kind == 'ring':
             n = 28
-            speed = self._rng.uniform(14.5,20.0) * s * size_mul
+            speed = self._rng.uniform(7.5,10.5) * s * size_mul
             jit = 0.05
             for i in range(n):
                 ang = 2 * np.pi * i / n
@@ -1472,7 +1476,7 @@ class FireworksShow(ProceduralAnimation):
         elif kind == 'crossette':
             # Big slow seeds that split into mini-bursts after ~0.6s.
             n = 8
-            speed = self._rng.uniform(10.5,14.5) * s * size_mul
+            speed = self._rng.uniform(7.5,10.5) * s * size_mul
             seed_life = self._rng.uniform(0.5, 0.8)
             for i in range(n):
                 ang = 2 * np.pi * i / n + self._rng.uniform(-0.04, 0.04)
@@ -1487,7 +1491,7 @@ class FireworksShow(ProceduralAnimation):
                 )
         elif kind == 'strobe':
             n = 14
-            speed = self._rng.uniform(6.5,10.5) * s * size_mul
+            speed = self._rng.uniform(4.8,7.5) * s * size_mul
             for i in range(n):
                 ang = 2 * np.pi * i / n + self._rng.uniform(-0.1, 0.1)
                 spd = speed * self._rng.uniform(0.7, 1.3)
@@ -1538,7 +1542,7 @@ class FireworksShow(ProceduralAnimation):
         for _ in range(int(count)):
             kind = kinds[self._rng.integers(0, len(kinds))]
             # Mostly mid-height apexes; occasional very-high big shells.
-            apex_y = self._rng.uniform(0.05, 0.40) * (self.height - 1)
+            apex_y = self._rng.uniform(0.04, 0.32) * (self.height - 1)
             target_x = self._rng.uniform(0.20, 0.80) * (self.width - 1)
             hue = self._random_hue()
             # Most shells normal-size; some big ones that cross the sky.
@@ -1659,12 +1663,30 @@ class FireworksShow(ProceduralAnimation):
             # Gaussian always bleeds across two LEDs; snapping is the only
             # way to get a genuinely single-pixel point on this grid.
             if kind in (self.K_TRACER, self.K_FLASH):
-                xi = int(round(x)); yi = int(round(y))
-                if 0 <= xi < self.width and 0 <= yi < self.height:
-                    hh = np.array([[hue]], dtype=np.float32)
-                    ss = np.array([[sat]], dtype=np.float32)
-                    vv = np.array([[min(1.0, amp)]], dtype=np.float32)
-                    frame[yi, xi] += _hsv_to_rgb_array(hh, ss, vv)[0, 0]
+                xi = int(round(x))
+                if not (0 <= xi < self.width):
+                    continue
+                hh = np.array([[hue]], dtype=np.float32)
+                ss = np.array([[sat]], dtype=np.float32)
+                vv = np.array([[1.0]], dtype=np.float32)
+                col = _hsv_to_rgb_array(hh, ss, vv)[0, 0]
+                a = min(1.0, amp)
+                if kind == self.K_FLASH:
+                    # Flash stays a hard, tight single pixel.
+                    yi = int(round(y))
+                    if 0 <= yi < self.height:
+                        frame[yi, xi] += col * a
+                else:
+                    # Tracer: ONE column wide, but feathered along the
+                    # direction of travel (vertical). Splitting the energy
+                    # between the two rows it sits between makes the climb
+                    # glide smoothly instead of jumping row to row, while
+                    # staying skinny horizontally.
+                    y0 = int(np.floor(y)); fy = y - y0
+                    if 0 <= y0 < self.height:
+                        frame[y0, xi] += col * (a * (1.0 - fy))
+                    if 0 <= y0 + 1 < self.height:
+                        frame[y0 + 1, xi] += col * (a * fy)
                 continue
 
             # Splat into a small bounding box only.
@@ -1700,6 +1722,29 @@ class FireworksShow(ProceduralAnimation):
         # tracers stay dim); above it the pixel's PEAK channel is compressed
         # asymptotically and all three channels are scaled together, so a
         # dense core gets brighter without sliding to flat white.
+        # Dark shockwave rings: an expanding, feathered black annulus per
+        # burst. It sweeps outward slightly ahead of the sparks, punching a
+        # tight dark gap right after the white flash, so the colour appears
+        # to emerge from behind it.
+        now = self._last_t
+        if self._waves:
+            self._waves = [w for w in self._waves if now - w[2] < 0.18]
+            # During the finale dozens of bursts overlap; every ring
+            # multiplies the frame down, so uncapped they would black
+            # out the sky. Keep only the newest few.
+            self._waves = self._waves[-6:]
+            px_s = self._scale / 10.0
+            for wx, wy, wt0 in self._waves:
+                age = now - wt0
+                if age < 0.0:
+                    continue
+                rad = age * 42.0 * px_s
+                wid = 0.85 * px_s
+                depth = 0.95 * max(0.0, 1.0 - age / 0.18) ** 0.7
+                d = np.sqrt((self.xx - wx) ** 2 + (self.yy - wy) ** 2)
+                ring = np.exp(-((d - rad) ** 2) / (2.0 * wid * wid))
+                frame *= (1.0 - depth * ring)[..., None]
+
         knee = 170.0
         m = frame.max(axis=2, keepdims=True)
         comp = knee + (255.0 - knee) * (1.0 - np.exp(-(m - knee)
