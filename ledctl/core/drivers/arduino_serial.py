@@ -65,6 +65,19 @@ class ArduinoSerialDevice(OutputDevice):
             cfg.get("serpentine_start_flipped", False)
         )
 
+        # Optional per-LED white-balance gains, as a list of
+        # (start, end, (r, g, b)) ranges over LED index. None = no correction.
+        self.balance = None
+        spec = cfg.get("balance")
+        if spec:
+            self.balance = [(1.0, 1.0, 1.0)] * self.count
+            for start, end, gains in spec:
+                lo = max(0, int(start))
+                hi = min(self.count, int(end))
+                for i in range(lo, hi):
+                    self.balance[i] = (float(gains[0]), float(gains[1]),
+                                       float(gains[2]))
+
         self.brightness: float = 1.0
         self._ser: Optional["serial.Serial"] = None
         self._lock = threading.Lock()
@@ -286,6 +299,20 @@ class ArduinoSerialDevice(OutputDevice):
                     r = int(r * b_mul)
                     g = int(g * b_mul)
                     b = int(b * b_mul)
+                # Per-LED white-balance calibration. Panels assembled from
+                # more than one strip batch have different R:G:B ratios per
+                # section: they match on saturated single-channel colour but
+                # show visibly different hues on mixed/grey values. Gains are
+                # applied in LED-INDEX space (physical strip order), which is
+                # where the batch boundary actually lives.
+                if self.balance is not None:
+                    gr, gg, gb = self.balance[led_idx]
+                    r = int(r * gr)
+                    g = int(g * gg)
+                    b = int(b * gb)
+                    r = 255 if r > 255 else r
+                    g = 255 if g > 255 else g
+                    b = 255 if b > 255 else b
                 r, g, b = self._reorder(r, g, b)
                 buf[off] = r & 0xFF
                 buf[off + 1] = g & 0xFF
