@@ -88,6 +88,9 @@ void setup() {
 }
 
 static inline void onFrameComplete() {
+  // No per-frame pin toggle here: driving D13 on every completed frame was
+  // observed to correlate with LED flicker. The idle heartbeat below is
+  // enough to show the sketch is alive, and it never runs during playback.
   last_frame_ms = millis();
 }
 

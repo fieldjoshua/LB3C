@@ -1301,11 +1301,10 @@ class FireworksShow(ProceduralAnimation):
     K_HEAVY = 2        # willow - higher gravity, slower
     K_CROSS_SEED = 3   # crossette parent - splits when life expires
     K_STROBE = 4       # strobe spark - flashes via life modulation
-    K_FLASH = 5        # one-pixel white burst flash, very fast fade
 
     def __init__(self, width: int, height: int, fps: float = 30,
                  show_duration: float = 60.0,
-                 horizon_y: float = 0.96,
+                 horizon_y: float = 0.92,
                  seed: int = 7):
         super().__init__(width, height, fps)
         self._scale = float(min(width, height))
@@ -1341,7 +1340,6 @@ class FireworksShow(ProceduralAnimation):
         self.p_burst_size = np.zeros(N, dtype=np.float32)
 
         self._last_t = 0.0
-        self._waves = []   # [x, y, t0] expanding dark shockwaves
         self._next_launch_t = 0.6
         self._show_t0 = 0.0
 
@@ -1390,7 +1388,7 @@ class FireworksShow(ProceduralAnimation):
         vy0 = -np.sqrt(2.0 * self.g * dy)
         t_apex = -vy0 / self.g
         # Tracer is small - target ~half an LED at the output resolution.
-        tracer_size = max(0.25, self._scale * 0.025)  # ~half a pixel
+        tracer_size = max(0.4, self._scale * 0.025)
         self._spawn_one(
             x=x0, y=self.horizon_y, vx=0.0, vy=vy0, life=t_apex,
             hue=0.13, sat=0.30, size=tracer_size,
@@ -1404,49 +1402,37 @@ class FireworksShow(ProceduralAnimation):
         s = self._scale / 80.0
         # Particle render sigma. Tuned so a single spark covers about half
         # an LED at the output resolution after supersample averaging.
-        size_px = max(0.26, self._scale * 0.026)   # zoomed out further
-        # Spawn shell radius: keeps particles off a single LED at
-        # burst time so they cannot sum into a white blob.
-        r0 = 0.85 * s
-        # Dark shockwave: an expanding black ring that sweeps out
-        # ahead of the sparks, so the colour emerges behind it.
-        self._waves.append([x, y, self._last_t])
-        # One-pixel white pop at the burst point.
-        self._spawn_one(x=x, y=y, vx=0.0, vy=0.0, life=0.16,
-                        hue=0.13, sat=0.0, size=0.5,
-                        kind=self.K_FLASH, gmul=0.0)
+        size_px = max(0.5, self._scale * 0.045)
 
         # Speed scale: in pixels/sec at this resolution. Tuned so big bursts
         # cross most of the strip during their lifetime.
         if kind == 'peony':
             n = 24
-            speed = self._rng.uniform(9.0,12.5) * s * size_mul
+            speed = self._rng.uniform(18.0, 26.0) * s * size_mul
             for i in range(n):
                 ang = (2 * np.pi * i / n) + self._rng.uniform(-0.07, 0.07)
                 spd = speed * self._rng.uniform(0.85, 1.15)
                 self._spawn_one(
-                    x=x + np.cos(ang) * r0, y=y + np.sin(ang) * r0,
-                    vx=spd * np.cos(ang), vy=spd * np.sin(ang),
+                    x=x, y=y, vx=spd * np.cos(ang), vy=spd * np.sin(ang),
                     life=self._rng.uniform(1.2, 1.8),
                     hue=(hue + self._rng.uniform(-0.02, 0.02)) % 1.0,
                     sat=1.0, size=size_px, kind=self.K_SPARK,
                 )
         elif kind == 'chrysanthemum':
             n = 30
-            speed = self._rng.uniform(9.5,15.5) * s * size_mul
+            speed = self._rng.uniform(20.0, 32.0) * s * size_mul
             for i in range(n):
                 ang = (2 * np.pi * i / n) + self._rng.uniform(-0.05, 0.05)
                 spd = speed * self._rng.uniform(0.7, 1.3)
                 self._spawn_one(
-                    x=x + np.cos(ang) * r0, y=y + np.sin(ang) * r0,
-                    vx=spd * np.cos(ang), vy=spd * np.sin(ang),
+                    x=x, y=y, vx=spd * np.cos(ang), vy=spd * np.sin(ang),
                     life=self._rng.uniform(1.8, 2.6),
                     hue=(hue + self._rng.uniform(-0.04, 0.04)) % 1.0,
                     sat=1.0, size=size_px, kind=self.K_SPARK,
                 )
         elif kind == 'willow':
             n = 22
-            speed = self._rng.uniform(7.5,11.0) * s * size_mul
+            speed = self._rng.uniform(15.0, 22.0) * s * size_mul
             for i in range(n):
                 ang = (2 * np.pi * i / n) + self._rng.uniform(-0.06, 0.06)
                 # Bias velocity slightly upward so droops feel right.
@@ -1462,28 +1448,26 @@ class FireworksShow(ProceduralAnimation):
                 )
         elif kind == 'ring':
             n = 28
-            speed = self._rng.uniform(7.5,10.5) * s * size_mul
+            speed = self._rng.uniform(22.0, 30.0) * s * size_mul
             jit = 0.05
             for i in range(n):
                 ang = 2 * np.pi * i / n
                 spd = speed * (1.0 + self._rng.uniform(-jit, jit))
                 self._spawn_one(
-                    x=x + np.cos(ang) * r0, y=y + np.sin(ang) * r0,
-                    vx=spd * np.cos(ang), vy=spd * np.sin(ang),
+                    x=x, y=y, vx=spd * np.cos(ang), vy=spd * np.sin(ang),
                     life=self._rng.uniform(1.2, 1.6),
                     hue=hue, sat=1.0, size=size_px, kind=self.K_SPARK,
                 )
         elif kind == 'crossette':
             # Big slow seeds that split into mini-bursts after ~0.6s.
             n = 8
-            speed = self._rng.uniform(7.5,10.5) * s * size_mul
+            speed = self._rng.uniform(16.0, 22.0) * s * size_mul
             seed_life = self._rng.uniform(0.5, 0.8)
             for i in range(n):
                 ang = 2 * np.pi * i / n + self._rng.uniform(-0.04, 0.04)
                 spd = speed * self._rng.uniform(0.9, 1.1)
                 self._spawn_one(
-                    x=x + np.cos(ang) * r0, y=y + np.sin(ang) * r0,
-                    vx=spd * np.cos(ang), vy=spd * np.sin(ang),
+                    x=x, y=y, vx=spd * np.cos(ang), vy=spd * np.sin(ang),
                     life=seed_life,
                     hue=hue, sat=1.0, size=size_px * 1.2,
                     kind=self.K_CROSS_SEED, gmul=0.6,
@@ -1491,13 +1475,12 @@ class FireworksShow(ProceduralAnimation):
                 )
         elif kind == 'strobe':
             n = 14
-            speed = self._rng.uniform(4.8,7.5) * s * size_mul
+            speed = self._rng.uniform(10.0, 16.0) * s * size_mul
             for i in range(n):
                 ang = 2 * np.pi * i / n + self._rng.uniform(-0.1, 0.1)
                 spd = speed * self._rng.uniform(0.7, 1.3)
                 self._spawn_one(
-                    x=x + np.cos(ang) * r0, y=y + np.sin(ang) * r0,
-                    vx=spd * np.cos(ang), vy=spd * np.sin(ang),
+                    x=x, y=y, vx=spd * np.cos(ang), vy=spd * np.sin(ang),
                     life=self._rng.uniform(1.4, 2.0),
                     hue=hue, sat=0.05, size=size_px,
                     kind=self.K_STROBE, gmul=0.9,
@@ -1542,7 +1525,7 @@ class FireworksShow(ProceduralAnimation):
         for _ in range(int(count)):
             kind = kinds[self._rng.integers(0, len(kinds))]
             # Mostly mid-height apexes; occasional very-high big shells.
-            apex_y = self._rng.uniform(0.04, 0.32) * (self.height - 1)
+            apex_y = self._rng.uniform(0.05, 0.40) * (self.height - 1)
             target_x = self._rng.uniform(0.20, 0.80) * (self.width - 1)
             hue = self._random_hue()
             # Most shells normal-size; some big ones that cross the sky.
@@ -1607,9 +1590,29 @@ class FireworksShow(ProceduralAnimation):
     def _render(self) -> np.ndarray:
         frame = np.zeros((self.height, self.width, 3), dtype=np.float32)
 
+        # Horizon: dim warm glow on the bottom-most row(s). Acts as a
+        # "ground line" the tracers launch from. Always visible so the
+        # show has a sense of place even between bursts.
+        h_row = int(round(self.horizon_y))
+        if 0 <= h_row < self.height:
+            # Hot-orange glow that's brightest on the horizon row and
+            # falls off above it within ~1.5 LEDs.
+            band = max(1.0, self._scale * 0.04)
+            dy = self.yy - self.horizon_y
+            base = np.clip(np.exp(-(dy * dy) / (2.0 * band * band)), 0.0, 1.0)
+            # Only on/below the horizon line (don't bleed too far up).
+            base = np.where(self.yy >= self.horizon_y - band * 1.2, base, 0.0)
+            # Warm dim color: hue ~0.05 (orange), low sat for dusky feel.
+            h_field = np.full_like(base, 0.05, dtype=np.float32)
+            s_field = np.full_like(base, 0.55, dtype=np.float32)
+            v_field = (base * 0.18).astype(np.float32)  # dim
+            frame += _hsv_to_rgb_array(
+                h_field.astype(np.float32), s_field, v_field
+            ).astype(np.float32)
+
         alive = np.where(self.plife > 0.0)[0]
         if alive.size == 0:
-            return np.clip(self._draw_land(frame), 0.0, 255.0).astype(np.uint8)
+            return np.clip(frame, 0.0, 255.0).astype(np.uint8)
 
         for i in alive:
             x = float(self.px[i]); y = float(self.py[i])
@@ -1620,19 +1623,13 @@ class FireworksShow(ProceduralAnimation):
             life_frac = float(self.plife[i] / max(0.001, self.pmaxlife[i]))
             # Brightness profile per kind:
             if kind == self.K_TRACER:
-                # Brightest at launch, fading as it climbs.
-                amp = 0.06 + 0.26 * life_frac
+                # Bright nearly constant; slight fade near apex.
+                amp = 0.85 + 0.15 * (1.0 - life_frac)
                 hue = float(self.phue[i])
                 sat = float(self.psat[i])
-            elif kind == self.K_FLASH:
-                # One-pixel white pop at the instant of the burst.
-                # life_frac^3 => very fast decay.
-                amp = life_frac ** 3
-                hue = 0.13
-                sat = 0.0
             elif kind == self.K_SPARK:
                 # Quick bright flash, fades to dim ember.
-                amp = life_frac * (0.42 + 0.18 * (1.0 - life_frac))
+                amp = life_frac * (0.7 + 0.3 * (1.0 - life_frac))
                 hue = float(self.phue[i])
                 sat = float(self.psat[i])
             elif kind == self.K_HEAVY:
@@ -1647,7 +1644,7 @@ class FireworksShow(ProceduralAnimation):
             elif kind == self.K_STROBE:
                 # Rapid on/off flicker via fast sine on remaining life.
                 flicker = 0.5 + 0.5 * np.sin(life_frac * 60.0)
-                amp = life_frac * flicker * 0.55
+                amp = life_frac * flicker
                 hue = float(self.phue[i])
                 sat = 0.05
             else:
@@ -1656,37 +1653,6 @@ class FireworksShow(ProceduralAnimation):
                 sat = float(self.psat[i])
 
             if amp < 0.02:
-                continue
-
-            # Tracers and the burst flash render as EXACTLY one LED with no
-            # Gaussian falloff - snapped to the nearest pixel. A sub-pixel
-            # Gaussian always bleeds across two LEDs; snapping is the only
-            # way to get a genuinely single-pixel point on this grid.
-            if kind in (self.K_TRACER, self.K_FLASH):
-                xi = int(round(x))
-                if not (0 <= xi < self.width):
-                    continue
-                hh = np.array([[hue]], dtype=np.float32)
-                ss = np.array([[sat]], dtype=np.float32)
-                vv = np.array([[1.0]], dtype=np.float32)
-                col = _hsv_to_rgb_array(hh, ss, vv)[0, 0]
-                a = min(1.0, amp)
-                if kind == self.K_FLASH:
-                    # Flash stays a hard, tight single pixel.
-                    yi = int(round(y))
-                    if 0 <= yi < self.height:
-                        frame[yi, xi] += col * a
-                else:
-                    # Tracer: ONE column wide, but feathered along the
-                    # direction of travel (vertical). Splitting the energy
-                    # between the two rows it sits between makes the climb
-                    # glide smoothly instead of jumping row to row, while
-                    # staying skinny horizontally.
-                    y0 = int(np.floor(y)); fy = y - y0
-                    if 0 <= y0 < self.height:
-                        frame[y0, xi] += col * (a * (1.0 - fy))
-                    if 0 <= y0 + 1 < self.height:
-                        frame[y0 + 1, xi] += col * (a * fy)
                 continue
 
             # Splat into a small bounding box only.
@@ -1706,59 +1672,7 @@ class FireworksShow(ProceduralAnimation):
             rgb = _hsv_to_rgb_array(h, s, g.astype(np.float32)).astype(np.float32)
             frame[y0:y1, x0:x1] += rgb
 
-        return np.clip(self._draw_land(frame), 0.0, 255.0).astype(np.uint8)
-
-    def _draw_land(self, frame):
-        """Composite the land OVER the particles so sparks that fall past
-        the horizon disappear behind it instead of drawing on top of it.
-        The land is opaque (near-black) with a warm rim right at the
-        horizon line, which reads as distant ground catching the glow.
-
-        Also applies a filmic highlight rolloff first: additive sparks
-        routinely sum past 255 where a burst is dense, and a hard clip turns
-        those cores flat white and throws the colour away. Compressing
-        highlights asymptotically keeps dense cores bright AND coloured."""
-        # Hue-preserving soft knee. Below `knee` nothing is touched (so dim
-        # tracers stay dim); above it the pixel's PEAK channel is compressed
-        # asymptotically and all three channels are scaled together, so a
-        # dense core gets brighter without sliding to flat white.
-        # Dark shockwave rings: an expanding, feathered black annulus per
-        # burst. It sweeps outward slightly ahead of the sparks, punching a
-        # tight dark gap right after the white flash, so the colour appears
-        # to emerge from behind it.
-        now = self._last_t
-        if self._waves:
-            self._waves = [w for w in self._waves if now - w[2] < 0.18]
-            # During the finale dozens of bursts overlap; every ring
-            # multiplies the frame down, so uncapped they would black
-            # out the sky. Keep only the newest few.
-            self._waves = self._waves[-6:]
-            px_s = self._scale / 10.0
-            for wx, wy, wt0 in self._waves:
-                age = now - wt0
-                if age < 0.0:
-                    continue
-                rad = age * 42.0 * px_s
-                wid = 0.85 * px_s
-                depth = 0.95 * max(0.0, 1.0 - age / 0.18) ** 0.7
-                d = np.sqrt((self.xx - wx) ** 2 + (self.yy - wy) ** 2)
-                ring = np.exp(-((d - rad) ** 2) / (2.0 * wid * wid))
-                frame *= (1.0 - depth * ring)[..., None]
-
-        knee = 170.0
-        m = frame.max(axis=2, keepdims=True)
-        comp = knee + (255.0 - knee) * (1.0 - np.exp(-(m - knee)
-                                                     / (255.0 - knee)))
-        frame = frame * np.where(m > knee, comp / np.maximum(m, 1e-6), 1.0)
-        land = self.yy >= self.horizon_y            # opaque ground mask
-        if land.any():
-            frame[land] = 0.0
-            # Warm rim on the topmost land row only - the lit horizon edge.
-            rim = np.abs(self.yy - self.horizon_y) < 0.75
-            rim &= land
-            if rim.any():
-                frame[rim] = np.array([46, 20, 8], np.float32)
-        return frame
+        return np.clip(frame, 0.0, 255.0).astype(np.uint8)
 
     # ---- Frame entry point ----------------------------------------------
 
@@ -2363,14 +2277,13 @@ class AmbientBlobs(ProceduralAnimation):
 
 
 class AmbientLavaLamp(ProceduralAnimation):
-    """Classic lava lamp: warm globules rising through a dark blue/violet
-    ether. No phases, no colour swapping - one continuous scene.
+    """Classic lava lamp: warm globules drifting through a dark blue/violet
+    ether. One continuous scene - no phases, no colour swapping.
 
     Globs are CONTAINED: they bounce off the walls (triangle-wave reflection,
-    never wrap or teleport) and merge via metaball field addition, growing
-    into bigger shapes when they meet and separating again as they pass.
-    Blob colour is shaded by field depth, so cores glow gold while edges
-    stay deep red - the whole thing sits over a slowly-drifting cool ether.
+    never wrapping or teleporting) and merge via metaball field addition,
+    growing when they meet and separating as they pass. Blob colour is shaded
+    by field depth, so cores glow gold while edges stay deep red.
     """
 
     # Warm blob gradient: dark red edge -> red -> orange -> gold core.
@@ -2381,7 +2294,7 @@ class AmbientLavaLamp(ProceduralAnimation):
     ETHER_B = np.array([34, 12, 62], np.float32)     # violet
 
     def __init__(self, width, height, fps=30, speed=1.0, num_blobs=5,
-                 feather=0.16, seed=3):
+                 feather=0.13, blob_size=0.78, seed=3):
         super().__init__(width, height, fps)
         xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
         yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
@@ -2393,11 +2306,13 @@ class AmbientLavaLamp(ProceduralAnimation):
         rng = np.random.default_rng(seed)
         self.bx0 = rng.uniform(0.25, 0.75, self.n).astype(np.float32)
         self.by0 = rng.uniform(0.25, 0.75, self.n).astype(np.float32)
-        vx = rng.uniform(0.035, 0.075, self.n) * rng.choice([-1, 1], self.n)
-        vy = rng.uniform(0.030, 0.065, self.n) * rng.choice([-1, 1], self.n)
+        # Gentle drift - slow enough that motion reads as smooth, not stepped.
+        vx = rng.uniform(0.020, 0.042, self.n) * rng.choice([-1, 1], self.n)
+        vy = rng.uniform(0.017, 0.036, self.n) * rng.choice([-1, 1], self.n)
         self.bvx = vx.astype(np.float32)
         self.bvy = vy.astype(np.float32)
-        self.br = rng.uniform(0.15, 0.21, self.n).astype(np.float32)
+        self.br = (rng.uniform(0.15, 0.21, self.n)
+                   * float(blob_size)).astype(np.float32)
         self.lut = _build_palette_lut(self.BLOB)
 
     @staticmethod
@@ -2412,14 +2327,13 @@ class AmbientLavaLamp(ProceduralAnimation):
         tt = float(time) * self.speed
         lo, hi = self.margin, 1.0 - self.margin
 
-        # Metaball field from the contained, bouncing, merging globs.
         field = np.zeros_like(self.xn)
         for i in range(self.n):
             bx = self._reflect(self.bx0[i] + self.bvx[i] * tt, lo, hi)
             by = self._reflect(self.by0[i] + self.bvy[i] * tt, lo, hi)
             d2 = (self.xn - bx) ** 2 + (self.yn - by) ** 2
             field += (self.br[i] ** 2) / (d2 + 0.0025)
-        m = np.tanh(field / self.n * 1.5)              # 0..1 coverage
+        m = np.tanh(field / self.n * 1.5)
 
         # Ether: slow large-scale drift between two cool shades.
         w = 0.5 + 0.5 * np.sin(2.0 * np.pi *
@@ -2427,207 +2341,15 @@ class AmbientLavaLamp(ProceduralAnimation):
         ether = (self.ETHER_A[None, None] * (1.0 - w[..., None])
                  + self.ETHER_B[None, None] * w[..., None])
 
-        # Blob colour shaded by how deep into the glob a pixel sits.
-        blob = _map_lut(self.lut, np.clip(m * 1.15, 0.02, 0.98))
-        blob = _sat_boost(blob, 1.25)
+        blob = _sat_boost(_map_lut(self.lut, np.clip(m * 1.15, 0.02, 0.98)), 1.25)
 
-        # Feathered coverage so glob edges dissolve into the ether.
-        a = np.clip((m - 0.42) / self.feather, 0.0, 1.0)
-        a = a * a * (3.0 - 2.0 * a)                    # smoothstep edges
-        a3 = a[..., None]
-        out = ether * (1.0 - a3) + blob * a3
-        return out.astype(np.float32)
-
-
-class AmbientBlobs(ProceduralAnimation):
-    """Contained multi-colored blobs. Globs bounce inside the box and merge;
-    each carries its own (stable) hue and the whole palette drifts slowly, so
-    colors are varied but coherent - not flickery.
-    """
-
-    PALETTE = [
-        (0.00, (30, 12, 90)),     # deep indigo
-        (0.18, (150, 30, 165)),   # magenta
-        (0.36, (235, 55, 95)),    # red-pink
-        (0.54, (245, 135, 30)),   # orange
-        (0.72, (240, 215, 70)),   # gold
-        (0.86, (40, 190, 150)),   # teal
-    ]
-
-    def __init__(self, width, height, fps=30, speed=1.0, num_blobs=6,
-                 color_speed=1.0, hue_spread=0.6, seed=3):
-        super().__init__(width, height, fps)
-        xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
-        yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
-        self.xn, self.yn = np.meshgrid(xn, yn)
-        self.n = int(num_blobs)
-        self.speed = speed
-        self.color_speed = float(color_speed)
-        self.hue_spread = float(hue_spread)
-        self.margin = 0.14
-        rng = np.random.default_rng(seed)
-        self.bx0 = rng.uniform(0.25, 0.75, self.n).astype(np.float32)
-        self.by0 = rng.uniform(0.25, 0.75, self.n).astype(np.float32)
-        vx = rng.uniform(0.05, 0.11, self.n) * rng.choice([-1, 1], self.n)
-        vy = rng.uniform(0.05, 0.11, self.n) * rng.choice([-1, 1], self.n)
-        self.bvx = vx.astype(np.float32)
-        self.bvy = vy.astype(np.float32)
-        self.br = rng.uniform(0.15, 0.21, self.n).astype(np.float32)
-        # Static per-blob hue offsets (no independent drift -> not flickery).
-        self.bhue = rng.uniform(0.0, 1.0, self.n).astype(np.float32)
-        self.lut = _build_palette_lut(self.PALETTE)
-
-    @staticmethod
-    def _reflect(p, lo, hi):
-        span = hi - lo
-        q = np.mod(p - lo, 2.0 * span)
-        return lo + (span - np.abs(q - span))
-
-    def generate_frame(self, time):
-        tt = float(time) * self.speed
-        lo, hi = self.margin, 1.0 - self.margin
-        field = np.zeros_like(self.xn)
-        hue_acc = np.zeros_like(self.xn)
-        for i in range(self.n):
-            bx = self._reflect(self.bx0[i] + self.bvx[i] * tt, lo, hi)
-            by = self._reflect(self.by0[i] + self.bvy[i] * tt, lo, hi)
-            d2 = (self.xn - bx) ** 2 + (self.yn - by) ** 2
-            w = (self.br[i] ** 2) / (d2 + 0.0025)
-            field += w
-            hue_acc += w * self.bhue[i]        # stable per-blob hue
-        m = np.tanh(field / self.n * 1.5)
-        blob_hue = hue_acc / (field + 1e-4)
-        base_hue = tt * 0.015 * self.color_speed
-        hue = (base_hue + m * self.hue_spread * 0.5 + blob_hue * 0.5) % 1.0
-        col = _sat_boost(_map_lut(self.lut, hue), 1.25)
-        out = col * (0.45 + 0.55 * m)[..., None]
-        return out.astype(np.float32)
-
-
-class AmbientLavaLamp(ProceduralAnimation):
-    """Classic lava lamp with a layered blob-over-ether model.
-
-    A dim ETHER background fills the box; on top of it sit vivid, focused
-    metaball BLOBS (contained, bouncing, merging). Over a slow cycle:
-      1. warm blobs just BE blobs (~1 min hold)
-      2. warm blobs ACCUMULATE (spread + brighten) until they cover the box
-      3. at full cover the ether commits to warm (hidden under the blobs),
-         then the blob color crossfades warm -> cool as the blobs RECEDE,
-         so cool focused blobs emerge on the now-warm ether (no pop, and no
-         color appearing from nowhere - it grows out of the receding blobs)
-      4. cool blobs hold, then accumulate to cover, ether commits to cool,
-         blob color crossfades back to warm as they recede -> repeat
-
-    Because the blobs are always the metaball PEAKS, both colors get real
-    focused blobs on top of the ether - not negative-space valleys.
-    """
-
-    # Vivid blob gradients (dark core -> bright) and dim ether colors.
-    WARM_BLOB = [(0.00, (110, 18, 8)), (0.5, (240, 70, 20)), (0.9, (255, 175, 55))]
-    COOL_BLOB = [(0.00, (18, 30, 120)), (0.5, (45, 115, 225)), (0.9, (120, 205, 255))]
-    WARM_ETHER = (40, 14, 9)
-    COOL_ETHER = (12, 16, 46)
-
-    # Keyframes: (phase, ether_mix, blob_mix, blob_cover). mix 0=cool, 1=warm.
-    # blob_cover is the fraction of the box the blobs occupy (0=focused specks,
-    # ~0.96=full). ether crossfades while blobs cover; blob color crossfades
-    # while blobs recede.
-    KEYS = [
-        (0.00, 0.0, 1.0, 0.90),   # warm blobs large, just committed cool ether
-        (0.10, 0.0, 1.0, 0.40),   # -> warm focused blobs emerged on cool ether
-        (0.24, 0.0, 1.0, 0.40),   # warm blob hold
-        (0.44, 0.0, 1.0, 0.96),   # warm accumulate -> cover
-        (0.50, 1.0, 1.0, 0.94),   # ether commits WARM (crossfade, hidden)
-        (0.60, 1.0, 0.0, 0.40),   # blob->cool while receding -> cool blobs emerge
-        (0.74, 1.0, 0.0, 0.40),   # cool blob hold
-        (0.94, 1.0, 0.0, 0.96),   # cool accumulate -> cover
-        (1.00, 0.0, 1.0, 0.94),   # ether commits COOL + blob->warm (== 0.00)
-    ]
-
-    def __init__(self, width, height, fps=30, speed=1.0, num_blobs=5,
-                 cycle_seconds=300.0, feather=0.12, seed=3):
-        super().__init__(width, height, fps)
-        xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
-        yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
-        self.xn, self.yn = np.meshgrid(xn, yn)
-        self.n = int(num_blobs)
-        self.speed = speed
-        self.cycle = max(20.0, float(cycle_seconds))
-        self.feather = max(0.04, float(feather))
-        self.margin = 0.14
-        rng = np.random.default_rng(seed)
-        self.bx0 = rng.uniform(0.25, 0.75, self.n).astype(np.float32)
-        self.by0 = rng.uniform(0.25, 0.75, self.n).astype(np.float32)
-        vx = rng.uniform(0.04, 0.09, self.n) * rng.choice([-1, 1], self.n)
-        vy = rng.uniform(0.04, 0.09, self.n) * rng.choice([-1, 1], self.n)
-        self.bvx = vx.astype(np.float32)
-        self.bvy = vy.astype(np.float32)
-        self.br = rng.uniform(0.15, 0.21, self.n).astype(np.float32)
-        self.warm_blob_lut = _build_palette_lut(self.WARM_BLOB)
-        self.cool_blob_lut = _build_palette_lut(self.COOL_BLOB)
-        self.warm_ether = np.array(self.WARM_ETHER, np.float32)
-        self.cool_ether = np.array(self.COOL_ETHER, np.float32)
-
-    @staticmethod
-    def _reflect(p, lo, hi):
-        span = hi - lo
-        q = np.mod(p - lo, 2.0 * span)
-        return lo + (span - np.abs(q - span))
-
-    def _keys_at(self, ph):
-        ks = self.KEYS
-        for i in range(len(ks) - 1):
-            p0 = ks[i][0]
-            p1 = ks[i + 1][0]
-            if p0 <= ph <= p1:
-                u = (ph - p0) / max(1e-6, p1 - p0)
-                u = u * u * (3.0 - 2.0 * u)          # smoothstep easing
-                a, b = ks[i], ks[i + 1]
-                return (a[1] + (b[1] - a[1]) * u,
-                        a[2] + (b[2] - a[2]) * u,
-                        a[3] + (b[3] - a[3]) * u)
-        return ks[-1][1], ks[-1][2], ks[-1][3]
-
-    def generate_frame(self, time):
-        tt = float(time) * self.speed
-        lo, hi = self.margin, 1.0 - self.margin
-
-        # Metaball field from contained, bouncing, merging blobs.
-        field = np.zeros_like(self.xn)
-        for i in range(self.n):
-            bx = self._reflect(self.bx0[i] + self.bvx[i] * tt, lo, hi)
-            by = self._reflect(self.by0[i] + self.bvy[i] * tt, lo, hi)
-            d2 = (self.xn - bx) ** 2 + (self.yn - by) ** 2
-            field += (self.br[i] ** 2) / (d2 + 0.0025)
-        m = np.tanh(field / self.n * 1.5)                 # 0..1 field
-
-        ph = (tt / self.cycle) % 1.0
-        ether_mix, blob_mix, blob_cover = self._keys_at(ph)
-
-        # Blob alpha: quantile threshold so the blobs occupy exactly
-        # blob_cover of the box (focused peaks that spread as cover grows).
-        thr = float(np.quantile(m, 1.0 - blob_cover))
-        a = np.clip((m - thr) / self.feather + 0.5, 0.0, 1.0)
-        # Sharpen so blob cores read as focused, vivid liquid.
+        # Feathered coverage: tight enough to read as a defined glob, soft
+        # enough that the edge carries sub-pixel position and glides.
+        a = np.clip((m - 0.44) / self.feather, 0.0, 1.0)
         a = a * a * (3.0 - 2.0 * a)
-
-        # Vivid blob color (internal gradient by field depth), crossfaded
-        # between families by blob_mix.
-        shade = np.clip(m * 1.15, 0.05, 0.95)
-        wb = _map_lut(self.warm_blob_lut, shade)
-        cb = _map_lut(self.cool_blob_lut, shade)
-        blob_col = _sat_boost(cb * (1.0 - blob_mix) + wb * blob_mix, 1.3)
-
-        # Dim ether background, crossfaded between families by ether_mix.
-        ether_col = (self.cool_ether * (1.0 - ether_mix)
-                     + self.warm_ether * ether_mix)[None, None]
-
         a3 = a[..., None]
-        out = ether_col * (1.0 - a3) + blob_col * a3
-        return out.astype(np.float32)
+        return (ether * (1.0 - a3) + blob * a3).astype(np.float32)
 
-
-# --- Noise-based ambient set ----------------------------------------------
 
 class _ValueNoise3D:
     """Tileable 3D value noise. Sampling the 3rd axis with time gives smooth,
