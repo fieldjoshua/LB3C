@@ -15,14 +15,17 @@
 // Nano (ATmega328P) RAM budget: ~2 KB. Each LED costs 3 bytes + overhead,
 // so keep LED_COUNT <= ~500.
 
-// Let the UART interrupt fire while FastLED is driving the strip. Without
-// this, show() disables interrupts for ~3ms; at 500k baud up to 150 bytes
-// can arrive in that window but the 64-byte serial buffer overflows, so
-// bytes are LOST and the frame stream desyncs (random full-panel flashes).
-// FastLED detects an interrupt that disturbed bit timing and retries the
-// frame, so the cost is an occasional repeated frame instead of corruption.
-#define FASTLED_ALLOW_INTERRUPTS 1
-
+// Interrupts MUST stay disabled while FastLED drives the strip. WS2811 bits
+// are ~1.25us; the millis() timer ISR alone (every ~1.02ms) is long enough to
+// mistime a bit, and a single mistimed bit shifts the data for every pixel
+// downstream - the tail of the strip turns to garbage colors. FastLED's AVR
+// default (interrupts off during show) is correct; do not enable
+// FASTLED_ALLOW_INTERRUPTS here.
+//
+// The real cause of dropped bytes is the 64-byte serial RX buffer, which
+// cannot hold the ~150 bytes that arrive during a 3ms show at 500k baud.
+// That is fixed at BUILD time, not here - compile with:
+//   --build-property build.extra_flags=-DSERIAL_RX_BUFFER_SIZE=256
 #include <FastLED.h>
 
 // ---- User config ---------------------------------------------------------
