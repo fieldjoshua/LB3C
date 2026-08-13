@@ -2363,6 +2363,148 @@ class AmbientBlobs(ProceduralAnimation):
 
 
 class AmbientLavaLamp(ProceduralAnimation):
+    """Classic lava lamp: warm globules rising through a dark blue/violet
+    ether. No phases, no colour swapping - one continuous scene.
+
+    Globs are CONTAINED: they bounce off the walls (triangle-wave reflection,
+    never wrap or teleport) and merge via metaball field addition, growing
+    into bigger shapes when they meet and separating again as they pass.
+    Blob colour is shaded by field depth, so cores glow gold while edges
+    stay deep red - the whole thing sits over a slowly-drifting cool ether.
+    """
+
+    # Warm blob gradient: dark red edge -> red -> orange -> gold core.
+    BLOB = [(0.00, (60, 6, 4)), (0.42, (190, 34, 12)),
+            (0.72, (245, 110, 24)), (0.95, (255, 200, 90))]
+    # Cool ether, two shades so the background drifts instead of sitting flat.
+    ETHER_A = np.array([10, 8, 42], np.float32)      # deep blue
+    ETHER_B = np.array([34, 12, 62], np.float32)     # violet
+
+    def __init__(self, width, height, fps=30, speed=1.0, num_blobs=5,
+                 feather=0.16, seed=3):
+        super().__init__(width, height, fps)
+        xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
+        yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
+        self.xn, self.yn = np.meshgrid(xn, yn)
+        self.n = int(num_blobs)
+        self.speed = float(speed)
+        self.feather = max(0.04, float(feather))
+        self.margin = 0.14
+        rng = np.random.default_rng(seed)
+        self.bx0 = rng.uniform(0.25, 0.75, self.n).astype(np.float32)
+        self.by0 = rng.uniform(0.25, 0.75, self.n).astype(np.float32)
+        vx = rng.uniform(0.035, 0.075, self.n) * rng.choice([-1, 1], self.n)
+        vy = rng.uniform(0.030, 0.065, self.n) * rng.choice([-1, 1], self.n)
+        self.bvx = vx.astype(np.float32)
+        self.bvy = vy.astype(np.float32)
+        self.br = rng.uniform(0.15, 0.21, self.n).astype(np.float32)
+        self.lut = _build_palette_lut(self.BLOB)
+
+    @staticmethod
+    def _reflect(p, lo, hi):
+        """Fold an unbounded position into [lo, hi] as a triangle wave -
+        a perfect elastic wall bounce, no state required."""
+        span = hi - lo
+        q = np.mod(p - lo, 2.0 * span)
+        return lo + (span - np.abs(q - span))
+
+    def generate_frame(self, time):
+        tt = float(time) * self.speed
+        lo, hi = self.margin, 1.0 - self.margin
+
+        # Metaball field from the contained, bouncing, merging globs.
+        field = np.zeros_like(self.xn)
+        for i in range(self.n):
+            bx = self._reflect(self.bx0[i] + self.bvx[i] * tt, lo, hi)
+            by = self._reflect(self.by0[i] + self.bvy[i] * tt, lo, hi)
+            d2 = (self.xn - bx) ** 2 + (self.yn - by) ** 2
+            field += (self.br[i] ** 2) / (d2 + 0.0025)
+        m = np.tanh(field / self.n * 1.5)              # 0..1 coverage
+
+        # Ether: slow large-scale drift between two cool shades.
+        w = 0.5 + 0.5 * np.sin(2.0 * np.pi *
+                               (self.xn * 0.5 + self.yn * 0.35) + tt * 0.09)
+        ether = (self.ETHER_A[None, None] * (1.0 - w[..., None])
+                 + self.ETHER_B[None, None] * w[..., None])
+
+        # Blob colour shaded by how deep into the glob a pixel sits.
+        blob = _map_lut(self.lut, np.clip(m * 1.15, 0.02, 0.98))
+        blob = _sat_boost(blob, 1.25)
+
+        # Feathered coverage so glob edges dissolve into the ether.
+        a = np.clip((m - 0.42) / self.feather, 0.0, 1.0)
+        a = a * a * (3.0 - 2.0 * a)                    # smoothstep edges
+        a3 = a[..., None]
+        out = ether * (1.0 - a3) + blob * a3
+        return out.astype(np.float32)
+
+
+class AmbientBlobs(ProceduralAnimation):
+    """Contained multi-colored blobs. Globs bounce inside the box and merge;
+    each carries its own (stable) hue and the whole palette drifts slowly, so
+    colors are varied but coherent - not flickery.
+    """
+
+    PALETTE = [
+        (0.00, (30, 12, 90)),     # deep indigo
+        (0.18, (150, 30, 165)),   # magenta
+        (0.36, (235, 55, 95)),    # red-pink
+        (0.54, (245, 135, 30)),   # orange
+        (0.72, (240, 215, 70)),   # gold
+        (0.86, (40, 190, 150)),   # teal
+    ]
+
+    def __init__(self, width, height, fps=30, speed=1.0, num_blobs=6,
+                 color_speed=1.0, hue_spread=0.6, seed=3):
+        super().__init__(width, height, fps)
+        xn = np.linspace(0.0, 1.0, width, dtype=np.float32)
+        yn = np.linspace(0.0, 1.0, height, dtype=np.float32)
+        self.xn, self.yn = np.meshgrid(xn, yn)
+        self.n = int(num_blobs)
+        self.speed = speed
+        self.color_speed = float(color_speed)
+        self.hue_spread = float(hue_spread)
+        self.margin = 0.14
+        rng = np.random.default_rng(seed)
+        self.bx0 = rng.uniform(0.25, 0.75, self.n).astype(np.float32)
+        self.by0 = rng.uniform(0.25, 0.75, self.n).astype(np.float32)
+        vx = rng.uniform(0.05, 0.11, self.n) * rng.choice([-1, 1], self.n)
+        vy = rng.uniform(0.05, 0.11, self.n) * rng.choice([-1, 1], self.n)
+        self.bvx = vx.astype(np.float32)
+        self.bvy = vy.astype(np.float32)
+        self.br = rng.uniform(0.15, 0.21, self.n).astype(np.float32)
+        # Static per-blob hue offsets (no independent drift -> not flickery).
+        self.bhue = rng.uniform(0.0, 1.0, self.n).astype(np.float32)
+        self.lut = _build_palette_lut(self.PALETTE)
+
+    @staticmethod
+    def _reflect(p, lo, hi):
+        span = hi - lo
+        q = np.mod(p - lo, 2.0 * span)
+        return lo + (span - np.abs(q - span))
+
+    def generate_frame(self, time):
+        tt = float(time) * self.speed
+        lo, hi = self.margin, 1.0 - self.margin
+        field = np.zeros_like(self.xn)
+        hue_acc = np.zeros_like(self.xn)
+        for i in range(self.n):
+            bx = self._reflect(self.bx0[i] + self.bvx[i] * tt, lo, hi)
+            by = self._reflect(self.by0[i] + self.bvy[i] * tt, lo, hi)
+            d2 = (self.xn - bx) ** 2 + (self.yn - by) ** 2
+            w = (self.br[i] ** 2) / (d2 + 0.0025)
+            field += w
+            hue_acc += w * self.bhue[i]        # stable per-blob hue
+        m = np.tanh(field / self.n * 1.5)
+        blob_hue = hue_acc / (field + 1e-4)
+        base_hue = tt * 0.015 * self.color_speed
+        hue = (base_hue + m * self.hue_spread * 0.5 + blob_hue * 0.5) % 1.0
+        col = _sat_boost(_map_lut(self.lut, hue), 1.25)
+        out = col * (0.45 + 0.55 * m)[..., None]
+        return out.astype(np.float32)
+
+
+class AmbientLavaLamp(ProceduralAnimation):
     """Classic lava lamp with a layered blob-over-ether model.
 
     A dim ETHER background fills the box; on top of it sit vivid, focused
