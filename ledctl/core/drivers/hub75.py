@@ -14,9 +14,9 @@ logger = logging.getLogger(__name__)
 try:
     from rgbmatrix import RGBMatrix, RGBMatrixOptions
     HAS_RGBMATRIX = True
-except ImportError:
+except ImportError as e:
     HAS_RGBMATRIX = False
-    logger.warning("rgbmatrix library not available - HUB75 support disabled")
+    logger.warning(f"rgbmatrix library not available - HUB75 support disabled ({e})")
 
 
 class HUB75Device(OutputDevice):
