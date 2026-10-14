@@ -10,6 +10,7 @@
 # Usage (on the Pi):
 #   bash ~/LB3C/ledctl/hub75/setup_pi_hub75.sh            # standard
 #   bash ~/LB3C/ledctl/hub75/setup_pi_hub75.sh --isolcpu  # also reserve CPU 3
+#   bash ~/LB3C/ledctl/hub75/setup_pi_hub75.sh --rebuild  # force a library rebuild
 #
 # Safe to re-run.
 
@@ -19,7 +20,13 @@ REPO_DIR="${REPO_DIR:-$HOME/LB3C}"
 MATRIX_DIR="${MATRIX_DIR:-$HOME/rpi-rgb-led-matrix}"
 VENV="$REPO_DIR/venv"
 ISOLCPU=0
-[[ "${1:-}" == "--isolcpu" ]] && ISOLCPU=1
+REBUILD=0
+for arg in "$@"; do
+  case "$arg" in
+    --isolcpu) ISOLCPU=1 ;;
+    --rebuild) REBUILD=1 ;;
+  esac
+done
 
 say() { printf '\n==> %s\n' "$*"; }
 
@@ -86,9 +93,25 @@ if [[ ! -f "$PIL_HDR/ImagingUtils.h" ]]; then
     curl -fsSL -o "$PIL_HDR/$h" "$PIL_URL/$h"
   done
 fi
-# Upstream builds and installs the bindings with `pip install .` from the
-# repo root, so this lands directly in our venv.
-(cd "$MATRIX_DIR" && CPATH="$PIL_HDR" "$VENV/bin/pip" install .)
+# Rebuilding takes ~10 minutes on a Pi 3 and makes nothing faster, so skip
+# it when the library source and Pillow version match the last good build
+# and the module still imports. --rebuild forces it.
+STAMP="$VENV/.rgbmatrix-build"
+WANT="$(git -C "$MATRIX_DIR" rev-parse HEAD) pillow-$PIL_VER"
+# A working build from before this check existed has no stamp; adopt it.
+if [[ $REBUILD == 0 && ! -f "$STAMP" ]] \
+   && "$VENV/bin/python" -c "import rgbmatrix" 2>/dev/null; then
+  echo "$WANT" > "$STAMP"
+fi
+if [[ $REBUILD == 0 && -f "$STAMP" && "$(cat "$STAMP")" == "$WANT" ]] \
+   && "$VENV/bin/python" -c "import rgbmatrix" 2>/dev/null; then
+  echo "Matrix library already built from this source - skipping rebuild"
+else
+  # Upstream builds and installs the bindings with `pip install .` from the
+  # repo root, so this lands directly in our venv.
+  (cd "$MATRIX_DIR" && CPATH="$PIL_HDR" "$VENV/bin/pip" install .)
+  echo "$WANT" > "$STAMP"
+fi
 
 "$VENV/bin/python" -c "import rgbmatrix; print('rgbmatrix import OK')"
 
