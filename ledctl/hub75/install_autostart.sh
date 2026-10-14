@@ -29,8 +29,9 @@ if [[ ! -f "$CONF" ]]; then
 #   sudo systemctl restart lightbox
 #
 # Several names cycle with a crossfade; --each is seconds per animation.
+# --hue-shift turns the colours this many degrees after each full cycle.
 # Remove --no-e once the Bonnet's E jumper is soldered (64x64 panels).
-LIGHTBOX_ARGS="ambient_sweep ambient_marble ambient_caustics ambient_plasma_noise aurora --device hub75 --no-e --each 300 --fps 30"
+LIGHTBOX_ARGS="ambient_sweep ambient_marble ambient_caustics ambient_plasma_noise aurora --device hub75 --no-e --each 300 --fps 30 --hue-shift 72"
 EOF
   echo "Wrote $CONF"
 else

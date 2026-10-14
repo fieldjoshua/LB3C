@@ -77,6 +77,14 @@ def main() -> int:
                          "crossfading to the next (default 300)")
     ap.add_argument("--fade", type=float, default=4.0, metavar="SECONDS",
                     help="with several names: crossfade length (default 4)")
+    ap.add_argument("--hue-shift", type=float, default=0.0, metavar="DEG",
+                    help="with several names: after each full pass through "
+                         "the list, turn every colour this many degrees "
+                         "around the colour wheel (e.g. 72 = five different "
+                         "palettes before it repeats). Brightness of every "
+                         "pixel is kept, so contrast is unchanged. The change "
+                         "happens gradually during the crossfade back to the "
+                         "first animation. Default 0 = off.")
     ap.add_argument("--list", action="store_true", help="list available animations")
 
     # Geometry.
@@ -303,6 +311,20 @@ def main() -> int:
         rw, rh = args.width, args.height
     anim = make_anim(args.names[0])
     anim_idx = 0
+    cycles = 0.0        # completed passes through the list (fractional mid-fade)
+
+    # Hue rotation that keeps luminance: go to YIQ (Y = luma), turn the
+    # I/Q chroma plane by the angle, come back. Y is untouched, so every
+    # pixel keeps its brightness and the picture keeps its contrast.
+    rgb2yiq = np.array([[0.299, 0.587, 0.114],
+                        [0.596, -0.274, -0.322],
+                        [0.211, -0.523, 0.312]], dtype=np.float32)
+    yiq2rgb = np.linalg.inv(rgb2yiq).astype(np.float32)
+
+    def hue_matrix(deg):
+        c, s_ = np.cos(np.radians(deg)), np.sin(np.radians(deg))
+        rot = np.array([[1, 0, 0], [0, c, -s_], [0, s_, c]], dtype=np.float32)
+        return (yiq2rgb @ rot @ rgb2yiq).T
     anim_start = 0.0    # wall time (since t0) the current animation began
     nxt = None          # the incoming animation during a crossfade
 
@@ -409,8 +431,11 @@ def main() -> int:
                 into = elapsed - anim_start - hold
                 if into >= 0 and nxt is None:
                     nxt = make_anim(args.names[(anim_idx + 1) % len(args.names)])
+                wraps = (anim_idx + 1) % len(args.names) == 0
                 if nxt is not None:
                     a = min(1.0, into / args.fade) if args.fade > 0 else 1.0
+                    if wraps:
+                        cycles = np.floor(cycles) + a
                     incoming = nxt.generate_frame(into * args.speed)
                     np_frame = (np_frame.astype(np.float32) * (1.0 - a)
                                 + incoming.astype(np.float32) * a)
@@ -419,6 +444,26 @@ def main() -> int:
                         anim_idx = (anim_idx + 1) % len(args.names)
                         anim_start = elapsed - into
                         print(f"  now playing {args.names[anim_idx]!r}")
+                        if anim_idx == 0 and args.hue_shift:
+                            cycles = float(round(cycles))
+                            print(f"  colours shifted to "
+                                  f"{(cycles * args.hue_shift) % 360:.0f} deg")
+
+            hue = (cycles * args.hue_shift) % 360.0
+            if hue:
+                src = np_frame.astype(np.float32)
+                out = src @ hue_matrix(hue)
+                # A turned colour can land outside what the LEDs can show
+                # (a channel < 0 or > 255). Instead of clipping, which would
+                # change brightness, pull just that pixel's colour toward its
+                # own grey until it fits: luma stays exact.
+                y = (src @ rgb2yiq[0])[..., None]
+                d = out - y
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    k = np.where(d > 0, (255.0 - y) / d,
+                                 np.where(d < 0, -y / d, np.inf))
+                k = np.clip(k.min(axis=-1, keepdims=True), 0.0, 1.0)
+                np_frame = np.clip(y + d * k, 0.0, 255.0)
 
             if not quarter:
                 # Float result, so it goes through the quantizer below.

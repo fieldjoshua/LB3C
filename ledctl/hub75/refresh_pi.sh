@@ -12,6 +12,9 @@
 # Usage (on the Pi):
 #   bash ~/LB3C/ledctl/hub75/refresh_pi.sh
 #   bash ~/LB3C/ledctl/hub75/refresh_pi.sh --no-os   skip the OS update
+#   bash ~/LB3C/ledctl/hub75/refresh_pi.sh --rebuild force a matrix rebuild
+#     (normally skipped when the library hasn't changed; it adds nothing
+#     to performance)
 # then reboot. Turn on read-only mode afterwards with appliance.sh on.
 
 set -euo pipefail
@@ -21,7 +24,13 @@ HUB="$REPO_DIR/ledctl/hub75"
 CONF=/etc/default/lightbox
 
 UPDATE_OS=1
-[[ "${1:-}" == "--no-os" ]] && UPDATE_OS=0
+SETUP_ARGS=(--isolcpu)
+for arg in "$@"; do
+  case "$arg" in
+    --no-os) UPDATE_OS=0 ;;
+    --rebuild) SETUP_ARGS+=(--rebuild) ;;
+  esac
+done
 
 say() { printf '\n==> %s\n' "$*"; }
 
@@ -45,7 +54,7 @@ say "Latest LB3C code"
 git -C "$REPO_DIR" pull --ff-only origin main
 
 say "Matrix library and Pi settings"
-bash "$HUB/setup_pi_hub75.sh" --isolcpu
+bash "$HUB/setup_pi_hub75.sh" "${SETUP_ARGS[@]}"
 
 say "Boot autostart"
 bash "$HUB/install_autostart.sh"
@@ -56,6 +65,12 @@ bash "$HUB/install_autostart.sh"
 if ! grep -q -- "--fps" "$CONF"; then
   sudo sed -i 's/^\(LIGHTBOX_ARGS=".*\)"$/\1 --fps 30"/' "$CONF"
   echo "Added --fps 30 to $CONF"
+fi
+# Recolour after every full pass through the list, keeping each pixel's
+# brightness (so contrast is unchanged): five palettes before it repeats.
+if ! grep -q -- "--hue-shift" "$CONF"; then
+  sudo sed -i 's/^\(LIGHTBOX_ARGS=".*\)"$/\1 --hue-shift 72"/' "$CONF"
+  echo "Added --hue-shift 72 to $CONF"
 fi
 grep '^LIGHTBOX_ARGS=' "$CONF"
 
