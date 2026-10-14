@@ -13,6 +13,7 @@ Usage:
     python3 ledctl/play_animation.py tunnel --brightness 0.6
     python3 ledctl/play_animation.py aurora --speed 1.5 --rotate 90
     python3 ledctl/play_animation.py metaballs --duration 30   # stop after 30s
+    python3 ledctl/play_animation.py aurora ambient_marble --each 300
 
 Ctrl-C cleanly clears the strip and disconnects.
 """
@@ -67,7 +68,14 @@ def frame_to_rgb_list(
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("name", nargs="?", help="animation name (omit with --list)")
+    ap.add_argument("names", nargs="*", metavar="name",
+                    help="animation name(s). Give several to cycle through "
+                         "them (see --each). Omit with --list.")
+    ap.add_argument("--each", type=float, default=300.0, metavar="SECONDS",
+                    help="with several names: seconds on each before "
+                         "crossfading to the next (default 300)")
+    ap.add_argument("--fade", type=float, default=4.0, metavar="SECONDS",
+                    help="with several names: crossfade length (default 4)")
     ap.add_argument("--list", action="store_true", help="list available animations")
 
     # Geometry.
@@ -209,24 +217,16 @@ def main() -> int:
         list_animations()
         return 0
 
-    if not args.name:
+    if not args.names:
         ap.print_help()
         return 0
 
-    if args.name not in AUTOMATION_REGISTRY:
-        print(f"unknown animation: {args.name!r}", file=sys.stderr)
-        print("run with --list to see options", file=sys.stderr)
-        return 2
-
-    cls = AUTOMATION_REGISTRY[args.name]
-    # Pass --palette / --warp / --param only to animations whose __init__
-    # accepts them, so flags are harmless on animations that don't support them.
-    extra = {}
-    sig_params = inspect.signature(cls.__init__).parameters
-    if args.palette is not None and "palette" in sig_params:
-        extra["palette"] = args.palette
-    if args.warp is not None and "warp" in sig_params:
-        extra["warp"] = args.warp
+    for name in args.names:
+        if name not in AUTOMATION_REGISTRY:
+            print(f"unknown animation: {name!r}", file=sys.stderr)
+            print("run with --list to see options", file=sys.stderr)
+            return 2
+    args.name = ", ".join(args.names)
 
     def _coerce(v):
         for caster in (int, float):
@@ -238,16 +238,31 @@ def main() -> int:
             return v.lower() == "true"
         return v
 
+    params = {}
     for item in args.param:
         if "=" not in item:
             print(f"ignoring malformed --param {item!r} (need K=V)", file=sys.stderr)
             continue
         k, v = item.split("=", 1)
-        k = k.strip()
-        if k in sig_params:
-            extra[k] = _coerce(v.strip())
-        else:
-            print(f"note: {args.name!r} has no param {k!r}, ignoring", file=sys.stderr)
+        params[k.strip()] = _coerce(v.strip())
+
+    def make_anim(name):
+        cls = AUTOMATION_REGISTRY[name]
+        # Pass --palette / --warp / --param only to animations whose __init__
+        # accepts them, so flags are harmless on ones that don't support them.
+        sig_params = inspect.signature(cls.__init__).parameters
+        extra = {}
+        if args.palette is not None and "palette" in sig_params:
+            extra["palette"] = args.palette
+        if args.warp is not None and "warp" in sig_params:
+            extra["warp"] = args.warp
+        for k, v in params.items():
+            if k in sig_params:
+                extra[k] = v
+            elif len(args.names) == 1:
+                print(f"note: {name!r} has no param {k!r}, ignoring",
+                      file=sys.stderr)
+        return cls(rw, rh, fps=args.fps, **extra)
 
     # Render at the pre-rotation size, so after --rotate the frame lands
     # exactly on the output's width x height (matters for non-square panels).
@@ -257,7 +272,10 @@ def main() -> int:
         rw, rh = args.height, args.width
     else:
         rw, rh = args.width, args.height
-    anim = cls(rw, rh, fps=args.fps, **extra)
+    anim = make_anim(args.names[0])
+    anim_idx = 0
+    anim_start = 0.0    # wall time (since t0) the current animation began
+    nxt = None          # the incoming animation during a crossfade
 
     count = args.count if args.count is not None else args.width * args.height
 
@@ -349,8 +367,29 @@ def main() -> int:
             if args.duration is not None and (now - t0) >= args.duration:
                 break
 
-            anim_t = (now - t0) * args.speed
+            elapsed = now - t0
+            anim_t = (elapsed - anim_start) * args.speed
             np_frame = anim.generate_frame(anim_t)
+
+            # Several names: hold each for --each seconds, then crossfade
+            # into the next one over --fade seconds. Both are rendered during
+            # the fade and blended in float, so it goes through the same
+            # quantizer as the float ambient animations.
+            if len(args.names) > 1:
+                hold = max(args.each, args.fade)
+                into = elapsed - anim_start - hold
+                if into >= 0 and nxt is None:
+                    nxt = make_anim(args.names[(anim_idx + 1) % len(args.names)])
+                if nxt is not None:
+                    a = min(1.0, into / args.fade) if args.fade > 0 else 1.0
+                    incoming = nxt.generate_frame(into * args.speed)
+                    np_frame = (np_frame.astype(np.float32) * (1.0 - a)
+                                + incoming.astype(np.float32) * a)
+                    if a >= 1.0:
+                        anim, nxt = nxt, None
+                        anim_idx = (anim_idx + 1) % len(args.names)
+                        anim_start = elapsed - into
+                        print(f"  now playing {args.names[anim_idx]!r}")
 
             # Float-output animations (ambient_*) carry sub-8-bit color.
             # Apply brightness in float, then sigma-delta dither to uint8:
