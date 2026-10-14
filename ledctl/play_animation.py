@@ -12,6 +12,7 @@ Usage:
     python3 ledctl/play_animation.py metaballs
     python3 ledctl/play_animation.py tunnel --brightness 0.6
     python3 ledctl/play_animation.py aurora --speed 1.5 --rotate 90
+    python3 ledctl/play_animation.py ambient_sweep --rotate 45
     python3 ledctl/play_animation.py metaballs --duration 30   # stop after 30s
     python3 ledctl/play_animation.py aurora ambient_marble --each 300
 
@@ -99,9 +100,11 @@ def main() -> int:
     ap.add_argument("--speed", type=float, default=1.0, metavar="X",
                     help="animation time multiplier. 1.0=normal, 2.0=2x "
                          "fast, 0.5=half speed.")
-    ap.add_argument("--rotate", type=int, default=0, choices=[0, 90, 180, 270],
-                    help="rotate the frame this many degrees clockwise to "
-                         "match the strip's physical orientation.")
+    ap.add_argument("--rotate", type=float, default=0.0, metavar="DEG",
+                    help="rotate the picture this many degrees clockwise. "
+                         "90/180/270 are exact; any other angle (e.g. 45) "
+                         "renders a larger canvas and resamples it smoothly, "
+                         "which costs extra render time.")
     ap.add_argument("--duration", type=float, default=None,
                     help="auto-stop after N seconds (default: run until Ctrl-C)")
     ap.add_argument("--palette", default=None,
@@ -191,9 +194,9 @@ def main() -> int:
         args.width = args.width or p_cols * args.chain
         args.height = args.height or p_rows * args.parallel
         if args.no_e:
-            if args.parallel != 1 or args.rotate in (90, 270) or p_rows < 8:
+            if args.parallel != 1 or args.rotate % 180 == 90 or p_rows < 8:
                 print("--no-e needs one panel row (--parallel 1), a panel of "
-                      "at least 8 rows, and --rotate 0 or 180",
+                      "at least 8 rows, and no --rotate 90/270",
                       file=sys.stderr)
                 return 2
             # Drive the panel as if it had half the rows, which only uses
@@ -266,8 +269,34 @@ def main() -> int:
 
     # Render at the pre-rotation size, so after --rotate the frame lands
     # exactly on the output's width x height (matters for non-square panels).
-    if args.no_e:
-        rw, rh = args.width, no_e_strip
+    args.rotate %= 360
+    quarter = args.rotate in (0, 90, 180, 270)
+    out_w, out_h = (args.width, no_e_strip) if args.no_e else (args.width, args.height)
+    if not quarter:
+        # Any other angle: render a square canvas big enough that the
+        # rotated output rectangle fits inside it, then bilinear-sample the
+        # output pixels from it (inverse rotation about the centres).
+        rw = rh = int(np.ceil(np.hypot(out_w, out_h))) + 1
+        th = np.radians(args.rotate)
+        oy, ox = np.mgrid[0:out_h, 0:out_w].astype(np.float32)
+        ox -= (out_w - 1) / 2.0
+        oy -= (out_h - 1) / 2.0
+        # Content turns clockwise on screen (y down), so sample the canvas
+        # at the counter-clockwise rotation of each output pixel.
+        sx = ox * np.cos(th) + oy * np.sin(th) + (rw - 1) / 2.0
+        sy = -ox * np.sin(th) + oy * np.cos(th) + (rh - 1) / 2.0
+        x0 = np.clip(np.floor(sx).astype(np.int32), 0, rw - 2)
+        y0 = np.clip(np.floor(sy).astype(np.int32), 0, rh - 2)
+        fx = np.clip(sx - x0, 0.0, 1.0)[..., None]
+        fy = np.clip(sy - y0, 0.0, 1.0)[..., None]
+
+        def rotate_frame(fr):
+            fr = fr.astype(np.float32)
+            top = fr[y0, x0] * (1 - fx) + fr[y0, x0 + 1] * fx
+            bot = fr[y0 + 1, x0] * (1 - fx) + fr[y0 + 1, x0 + 1] * fx
+            return top * (1 - fy) + bot * fy
+    elif args.no_e:
+        rw, rh = out_w, out_h
     elif args.rotate in (90, 270):
         rw, rh = args.height, args.width
     else:
@@ -391,6 +420,10 @@ def main() -> int:
                         anim_start = elapsed - into
                         print(f"  now playing {args.names[anim_idx]!r}")
 
+            if not quarter:
+                # Float result, so it goes through the quantizer below.
+                np_frame = rotate_frame(np_frame)
+
             # Float-output animations (ambient_*) carry sub-8-bit color.
             # Apply brightness in float, then sigma-delta dither to uint8:
             # add the carried error, round, and carry the new remainder
@@ -428,9 +461,9 @@ def main() -> int:
                     np_frame = np.clip(f, 0, 255).astype(np.uint8)
                 applied_brightness = 1.0  # already applied above
 
-            if args.rotate:
+            if args.rotate and quarter:
                 # numpy rot90 is counter-clockwise; negate k for clockwise.
-                k_cw = {90: -1, 180: -2, 270: -3}[args.rotate]
+                k_cw = {90: -1, 180: -2, 270: -3}[int(args.rotate)]
                 np_frame = np.rot90(np_frame, k=k_cw).copy()
 
             if args.device == "hub75":
