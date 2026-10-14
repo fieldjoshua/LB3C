@@ -30,7 +30,7 @@ if [[ ! -f "$CONF" ]]; then
 #
 # Several names cycle with a crossfade; --each is seconds per animation.
 # Remove --no-e once the Bonnet's E jumper is soldered (64x64 panels).
-LIGHTBOX_ARGS="ambient_sweep ambient_marble ambient_caustics ambient_plasma_noise aurora --device hub75 --no-e --each 300"
+LIGHTBOX_ARGS="ambient_sweep ambient_marble ambient_caustics ambient_plasma_noise aurora --device hub75 --no-e --each 300 --fps 30"
 EOF
   echo "Wrote $CONF"
 else
