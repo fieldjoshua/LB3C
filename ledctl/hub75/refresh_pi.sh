@@ -11,6 +11,7 @@
 #
 # Usage (on the Pi):
 #   bash ~/LB3C/ledctl/hub75/refresh_pi.sh
+#   bash ~/LB3C/ledctl/hub75/refresh_pi.sh --no-os   skip the OS update
 # then reboot. Turn on read-only mode afterwards with appliance.sh on.
 
 set -euo pipefail
@@ -18,6 +19,9 @@ set -euo pipefail
 REPO_DIR="${REPO_DIR:-$HOME/LB3C}"
 HUB="$REPO_DIR/ledctl/hub75"
 CONF=/etc/default/lightbox
+
+UPDATE_OS=1
+[[ "${1:-}" == "--no-os" ]] && UPDATE_OS=0
 
 say() { printf '\n==> %s\n' "$*"; }
 
@@ -27,11 +31,15 @@ if grep -q "overlayroot=tmpfs" /proc/cmdline; then
   exit 1
 fi
 
-say "Raspberry Pi OS updates"
-sudo apt-get update
-sudo apt-get full-upgrade -y
-sudo apt-get autoremove -y
-sudo apt-get clean
+if [[ $UPDATE_OS == 1 ]]; then
+  say "Raspberry Pi OS updates"
+  sudo apt-get update
+  sudo apt-get full-upgrade -y
+  sudo apt-get autoremove -y
+  sudo apt-get clean
+else
+  say "Skipping Raspberry Pi OS updates (--no-os)"
+fi
 
 say "Latest LB3C code"
 git -C "$REPO_DIR" pull --ff-only origin main
