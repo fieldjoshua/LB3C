@@ -193,6 +193,23 @@ class HUB75Device(OutputDevice):
             logger.error(f"Error drawing to HUB75 matrix: {e}")
             raise
             
+    def draw_numpy(self, frame) -> None:
+        """Fast path: push an (H, W, 3) uint8 numpy frame in one C call.
+
+        SetImage on an offscreen canvas + SwapOnVSync avoids the per-pixel
+        Python loop in draw_rgb_frame, which is far too slow for a 64x64
+        panel on a Pi 3 (4096 SetPixel calls per frame).
+        """
+        if not self.is_open or not self.matrix:
+            raise RuntimeError("Device not open")
+        from PIL import Image
+        h, w = frame.shape[:2]
+        img = Image.fromarray(frame, "RGB")
+        if (w, h) != (self.width, self.height):
+            img = img.resize((self.width, self.height), Image.BILINEAR)
+        self.offscreen_canvas.SetImage(img, 0, 0)
+        self.offscreen_canvas = self.matrix.SwapOnVSync(self.offscreen_canvas)
+
     def _scale_frame(self, rgb_data: List[Tuple[int, int, int]], 
                      src_w: int, src_h: int, 
                      dst_w: int, dst_h: int) -> List[Tuple[int, int, int]]:
