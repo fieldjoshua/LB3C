@@ -70,9 +70,23 @@ if [[ -d "$MATRIX_DIR/.git" ]]; then
 else
   git clone https://github.com/hzeller/rpi-rgb-led-matrix.git "$MATRIX_DIR"
 fi
+# The bindings' Pillow shim includes Pillow's private Imaging.h, which the
+# Pillow wheel does not ship. Fetch the source of the exact Pillow version in
+# the venv (the shim reads Pillow's struct layout, so versions must match)
+# and put its headers on the compiler's include path.
+PIL_VER="$("$VENV/bin/python" -c 'import PIL; print(PIL.__version__)')"
+PIL_SRC="$HOME/.cache/lb3c/pillow-$PIL_VER"
+if [[ ! -f "$PIL_SRC/src/libImaging/Imaging.h" ]]; then
+  say "Pillow $PIL_VER headers"
+  mkdir -p "$HOME/.cache/lb3c"
+  "$VENV/bin/pip" download "pillow==$PIL_VER" --no-deps --no-binary :all: \
+    -d "$HOME/.cache/lb3c"
+  tar -xzf "$HOME/.cache/lb3c/pillow-$PIL_VER.tar.gz" -C "$HOME/.cache/lb3c" \
+    "pillow-$PIL_VER/src/libImaging"
+fi
 # Upstream builds and installs the bindings with `pip install .` from the
 # repo root, so this lands directly in our venv.
-(cd "$MATRIX_DIR" && "$VENV/bin/pip" install .)
+(cd "$MATRIX_DIR" && CPATH="$PIL_SRC/src/libImaging" "$VENV/bin/pip" install .)
 
 "$VENV/bin/python" -c "import rgbmatrix; print('rgbmatrix import OK')"
 
