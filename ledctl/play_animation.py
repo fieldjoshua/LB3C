@@ -71,8 +71,14 @@ def main() -> int:
     ap.add_argument("--list", action="store_true", help="list available animations")
 
     # Geometry.
-    ap.add_argument("--width", type=int, default=10)
-    ap.add_argument("--height", type=int, default=10)
+    ap.add_argument("--device", choices=["arduino", "hub75"], default="arduino",
+                    help="output: 'arduino' = Nano over USB (Adalight), "
+                         "'hub75' = RGB matrix on a Pi via rpi-rgb-led-matrix "
+                         "(run with sudo).")
+    ap.add_argument("--width", type=int, default=None,
+                    help="render width (default: 10 for arduino, panel size "
+                         "for hub75)")
+    ap.add_argument("--height", type=int, default=None)
     ap.add_argument("--count", type=int, default=None,
                     help="LED count (default = width*height)")
     ap.add_argument("--fps", type=float, default=60.0,
@@ -109,6 +115,25 @@ def main() -> int:
     ap.add_argument("--order", default="GRB", help="strip color order")
     ap.add_argument("--layout", default="serpentine",
                     choices=["serpentine", "linear"])
+
+    # HUB75 matrix (Adafruit RGB Matrix Bonnet/HAT on a Raspberry Pi).
+    ap.add_argument("--panel", default="64x64", metavar="ROWSxCOLS",
+                    help="hub75: one panel's size, e.g. 32x64 (default 64x64)")
+    ap.add_argument("--chain", type=int, default=1,
+                    help="hub75: panels daisy-chained horizontally")
+    ap.add_argument("--parallel", type=int, default=1)
+    ap.add_argument("--hardware-mapping", default="adafruit-hat",
+                    help="hub75: 'adafruit-hat', or 'adafruit-hat-pwm' if the "
+                         "GPIO4-GPIO18 quality jumper is soldered")
+    ap.add_argument("--gpio-slowdown", type=int, default=2,
+                    help="hub75: 2 for a Pi 3 (raise if the panel flickers "
+                         "or shows garbage)")
+    ap.add_argument("--matrix-brightness", type=int, default=80,
+                    help="hub75: panel brightness 1-100 (hardware PWM)")
+    ap.add_argument("--pwm-bits", type=int, default=11)
+    ap.add_argument("--pwm-lsb-ns", type=int, default=130)
+    ap.add_argument("--limit-refresh", type=int, default=0,
+                    help="hub75: cap panel refresh Hz (0 = unlimited)")
     ap.add_argument("--balance", action="append", default=[],
                     metavar="START:END:R,G,B",
                     help="per-LED white-balance gains over an LED-index range, "
@@ -140,6 +165,19 @@ def main() -> int:
     ap.add_argument("-v", "--verbose", action="store_true")
 
     args = ap.parse_args()
+
+    if args.device == "hub75":
+        try:
+            p_rows, p_cols = (int(v) for v in args.panel.lower().split("x"))
+        except ValueError:
+            print(f"--panel must look like 64x64 (got {args.panel!r})",
+                  file=sys.stderr)
+            return 2
+        args.width = args.width or p_cols * args.chain
+        args.height = args.height or p_rows * args.parallel
+    else:
+        args.width = args.width or 10
+        args.height = args.height or 10
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.WARNING,
@@ -190,7 +228,13 @@ def main() -> int:
         else:
             print(f"note: {args.name!r} has no param {k!r}, ignoring", file=sys.stderr)
 
-    anim = cls(args.width, args.height, fps=args.fps, **extra)
+    # Render at the pre-rotation size, so after --rotate the frame lands
+    # exactly on the output's width x height (matters for non-square panels).
+    if args.rotate in (90, 270):
+        rw, rh = args.height, args.width
+    else:
+        rw, rh = args.width, args.height
+    anim = cls(rw, rh, fps=args.fps, **extra)
 
     count = args.count if args.count is not None else args.width * args.height
 
@@ -209,21 +253,41 @@ def main() -> int:
     if balance_spec:
         print(f"white-balance calibration: {len(balance_spec)} range(s)")
 
-    dev = ArduinoSerialDevice({
-        "arduino": {
-            "port": args.port,
-            "baud": args.baud,
-            "width": args.width,
-            "height": args.height,
-            "count": count,
-            "pixel_order": args.order,
-            "layout": args.layout,
-            "balance": balance_spec,
-        }
-    })
+    if args.device == "hub75":
+        from core.drivers.hub75 import HUB75Device, HAS_RGBMATRIX
+        if not HAS_RGBMATRIX:
+            print("rgbmatrix module not found - install rpi-rgb-led-matrix's "
+                  "Python bindings (see ledctl/hub75/setup_pi_hub75.sh)",
+                  file=sys.stderr)
+            return 1
+        dev = HUB75Device({"hub75": {
+            "rows": args.height // args.parallel,
+            "cols": args.width // args.chain,
+            "chain_length": args.chain,
+            "parallel": args.parallel,
+            "hardware_mapping": args.hardware_mapping,
+            "gpio_slowdown": args.gpio_slowdown,
+            "brightness": args.matrix_brightness,
+            "pwm_bits": args.pwm_bits,
+            "pwm_lsb_nanoseconds": args.pwm_lsb_ns,
+            "limit_refresh_rate_hz": args.limit_refresh,
+        }})
+    else:
+        dev = ArduinoSerialDevice({
+            "arduino": {
+                "port": args.port,
+                "baud": args.baud,
+                "width": args.width,
+                "height": args.height,
+                "count": count,
+                "pixel_order": args.order,
+                "layout": args.layout,
+                "balance": balance_spec,
+            }
+        })
 
-    print(f"playing {args.name!r} on {args.width}x{args.height} "
-          f"({count} LEDs) at {args.fps:g} fps. Ctrl-C to stop.")
+    print(f"playing {args.name!r} on {args.device} {args.width}x{args.height} "
+          f"({count} px) at {args.fps:g} fps. Ctrl-C to stop.")
 
     # Arduino pipeline budget: a frame must be RECEIVED (10 wire bits per
     # byte at the configured baud) and then SHOWN (WS2811 = 30us per LED,
@@ -235,7 +299,7 @@ def main() -> int:
     send_s = frame_bytes * 10.0 / args.baud
     show_s = count * 30e-6
     max_clean_fps = 1.0 / (send_s + show_s)
-    if args.fps > max_clean_fps:
+    if args.device == "arduino" and args.fps > max_clean_fps:
         print(f"  WARNING: {args.fps:g} fps exceeds the serial+show budget "
               f"({send_s*1e3:.1f}ms + {show_s*1e3:.1f}ms per frame). The "
               f"Arduino will tear/drop frames and dithering accuracy "
@@ -307,11 +371,15 @@ def main() -> int:
                 k_cw = {90: -1, 180: -2, 270: -3}[args.rotate]
                 np_frame = np.rot90(np_frame, k=k_cw).copy()
 
-            rgb_data = frame_to_rgb_list(np_frame, applied_brightness)
-            # After a 90/270 rotation the raster is (W, H) not (H, W).
-            if args.rotate in (90, 270):
-                dev.draw_rgb_frame(args.height, args.width, rgb_data)
+            if args.device == "hub75":
+                if np_frame.dtype != np.uint8:
+                    np_frame = np.clip(np_frame, 0, 255).astype(np.uint8)
+                if applied_brightness < 1.0:
+                    np_frame = (np_frame.astype(np.float32)
+                                * applied_brightness).astype(np.uint8)
+                dev.draw_numpy(np.ascontiguousarray(np_frame))
             else:
+                rgb_data = frame_to_rgb_list(np_frame, applied_brightness)
                 dev.draw_rgb_frame(args.width, args.height, rgb_data)
             frames_sent += 1
 
@@ -328,11 +396,12 @@ def main() -> int:
                 # Behind schedule; reset to avoid runaway catch-up.
                 next_tick = time.monotonic()
     finally:
-        try:
-            black = [(0, 0, 0)] * (args.width * args.height)
-            dev.draw_rgb_frame(args.width, args.height, black)
-        except Exception:
-            pass
+        if args.device != "hub75":   # hub75 close() clears the panel itself
+            try:
+                black = [(0, 0, 0)] * (args.width * args.height)
+                dev.draw_rgb_frame(args.width, args.height, black)
+            except Exception:
+                pass
         dev.close()
         elapsed = time.monotonic() - t0
         if elapsed > 0:

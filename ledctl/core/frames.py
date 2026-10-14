@@ -10,7 +10,10 @@ import logging
 from typing import List, Tuple, Optional, Iterator, Any, Dict
 from PIL import Image, ImageSequence
 import numpy as np
-import cv2
+try:
+    import cv2  # only needed for video files / cv2 resizing
+except ImportError:  # e.g. a Pi running procedural animations only
+    cv2 = None
 from threading import Lock
 from collections import deque
 
