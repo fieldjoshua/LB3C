@@ -119,6 +119,13 @@ def main() -> int:
     # HUB75 matrix (Adafruit RGB Matrix Bonnet/HAT on a Raspberry Pi).
     ap.add_argument("--panel", default="64x64", metavar="ROWSxCOLS",
                     help="hub75: one panel's size, e.g. 32x64 (default 64x64)")
+    ap.add_argument("--no-e", action="store_true",
+                    help="hub75: workaround for a 64-row panel whose E "
+                         "address jumper is not soldered yet. Without E the "
+                         "panel can only address 16-row bands, and each band "
+                         "repeats. This renders a thin strip and mirrors it "
+                         "so the repeats join seamlessly (a kaleidoscope "
+                         "tiling) instead of showing broken copies.")
     ap.add_argument("--chain", type=int, default=1,
                     help="hub75: panels daisy-chained horizontally")
     ap.add_argument("--parallel", type=int, default=1)
@@ -175,6 +182,20 @@ def main() -> int:
             return 2
         args.width = args.width or p_cols * args.chain
         args.height = args.height or p_rows * args.parallel
+        if args.no_e:
+            if args.parallel != 1 or args.rotate in (90, 270) or p_rows < 8:
+                print("--no-e needs one panel row (--parallel 1), a panel of "
+                      "at least 8 rows, and --rotate 0 or 180",
+                      file=sys.stderr)
+                return 2
+            # Drive the panel as if it had half the rows, which only uses
+            # address lines A-D. The panel then shows four 16-row bands
+            # (for 64 rows); we fill each band with a strip plus its mirror.
+            args.height = p_rows // 2
+            no_e_strip = p_rows // 8
+    elif args.no_e:
+        print("--no-e only applies to --device hub75", file=sys.stderr)
+        return 2
     else:
         args.width = args.width or 10
         args.height = args.height or 10
@@ -230,7 +251,9 @@ def main() -> int:
 
     # Render at the pre-rotation size, so after --rotate the frame lands
     # exactly on the output's width x height (matters for non-square panels).
-    if args.rotate in (90, 270):
+    if args.no_e:
+        rw, rh = args.width, no_e_strip
+    elif args.rotate in (90, 270):
         rw, rh = args.height, args.width
     else:
         rw, rh = args.width, args.height
@@ -377,6 +400,9 @@ def main() -> int:
                 if applied_brightness < 1.0:
                     np_frame = (np_frame.astype(np.float32)
                                 * applied_brightness).astype(np.uint8)
+                if args.no_e:
+                    band = np.concatenate([np_frame, np_frame[::-1]])
+                    np_frame = np.concatenate([band, band])
                 dev.draw_numpy(np.ascontiguousarray(np_frame))
             else:
                 rgb_data = frame_to_rgb_list(np_frame, applied_brightness)
