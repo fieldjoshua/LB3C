@@ -32,7 +32,7 @@ fi
 
 say "System packages"
 sudo apt-get update
-sudo apt-get install -y git python3-venv python3-dev cython3 build-essential
+sudo apt-get install -y git curl python3-venv python3-dev cython3 build-essential
 
 say "Disable onboard audio (it shares the PWM hardware the matrix needs)"
 # rpi-rgb-led-matrix refuses to run, or flickers badly, while the
@@ -71,22 +71,24 @@ else
   git clone https://github.com/hzeller/rpi-rgb-led-matrix.git "$MATRIX_DIR"
 fi
 # The bindings' Pillow shim includes Pillow's private Imaging.h, which the
-# Pillow wheel does not ship. Fetch the source of the exact Pillow version in
-# the venv (the shim reads Pillow's struct layout, so versions must match)
-# and put its headers on the compiler's include path.
+# Pillow wheel does not ship. Fetch that header and the ones it includes for
+# the exact Pillow version in the venv (the shim reads Pillow's struct
+# layout, so versions must match) and put them on the include path. This
+# grabs ~30 KB instead of pip preparing the 47 MB sdist, which can take a
+# very long time on a Pi 3.
 PIL_VER="$("$VENV/bin/python" -c 'import PIL; print(PIL.__version__)')"
-PIL_SRC="$HOME/.cache/lb3c/pillow-$PIL_VER"
-if [[ ! -f "$PIL_SRC/src/libImaging/Imaging.h" ]]; then
+PIL_HDR="$HOME/.cache/lb3c/pillow-$PIL_VER-headers"
+PIL_URL="https://raw.githubusercontent.com/python-pillow/Pillow/$PIL_VER/src/libImaging"
+if [[ ! -f "$PIL_HDR/ImagingUtils.h" ]]; then
   say "Pillow $PIL_VER headers"
-  mkdir -p "$HOME/.cache/lb3c"
-  "$VENV/bin/pip" download "pillow==$PIL_VER" --no-deps --no-binary :all: \
-    -d "$HOME/.cache/lb3c"
-  tar -xzf "$HOME/.cache/lb3c/pillow-$PIL_VER.tar.gz" -C "$HOME/.cache/lb3c" \
-    "pillow-$PIL_VER/src/libImaging"
+  mkdir -p "$PIL_HDR"
+  for h in Imaging.h ImPlatform.h Mode.h Arrow.h ImagingUtils.h; do
+    curl -fsSL -o "$PIL_HDR/$h" "$PIL_URL/$h"
+  done
 fi
 # Upstream builds and installs the bindings with `pip install .` from the
 # repo root, so this lands directly in our venv.
-(cd "$MATRIX_DIR" && CPATH="$PIL_SRC/src/libImaging" "$VENV/bin/pip" install .)
+(cd "$MATRIX_DIR" && CPATH="$PIL_HDR" "$VENV/bin/pip" install .)
 
 "$VENV/bin/python" -c "import rgbmatrix; print('rgbmatrix import OK')"
 
