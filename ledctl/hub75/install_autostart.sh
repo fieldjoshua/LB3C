@@ -31,7 +31,7 @@ if [[ ! -f "$CONF" ]]; then
 # Several names cycle with a crossfade; --each is seconds per animation.
 # --hue-shift turns the colours this many degrees after each full cycle.
 # Remove --no-e once the Bonnet's E jumper is soldered (64x64 panels).
-LIGHTBOX_ARGS="ambient_sweep ambient_marble ambient_caustics ambient_plasma_noise aurora --device hub75 --no-e --each 300 --fps 30 --hue-shift 72"
+LIGHTBOX_ARGS="ambient_sweep ambient_caustics ambient_flowing_lava ambient_marble ambient_field aurora ambient_nebula ambient_smoke ambient_lava ambient_plasma_noise ambient_wood ambient_ripples ambient_clouds ambient_blobs ambient_spiral ambient_aurora ambient_cosmic plasma_flow ambient_ink ambient_bloom --device hub75 --no-e --each 180 --fps 30 --hue-shift 72"
 EOF
   echo "Wrote $CONF"
 else
