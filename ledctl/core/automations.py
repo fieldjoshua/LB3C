@@ -3846,6 +3846,387 @@ class DayToNight(ProceduralAnimation):
         return np.clip(frame, 0.0, 255.0).astype(np.float32)
 
 
+# --- Drops, ripples and stars ----------------------------------------------
+# Point-like animations: sparse events on mostly dark space. Sizes and speeds
+# are in PIXELS (scaled to a 64-pixel-wide reference), not fractions of the
+# frame, so a 64x8 --no-e strip and a full 64x64 panel show the same drop
+# sizes; event rates scale with area so density per pixel matches too.
+
+def _knee(col, knee=170.0):
+    """Hue-preserving soft highlight compression for additive light: pixels
+    whose brightest channel exceeds `knee` are scaled down as a whole, so
+    overlapping drops get brighter without clipping to white or shifting
+    hue. Anything below the knee is untouched (dark space stays dark)."""
+    m = col.max(axis=-1, keepdims=True)
+    over = np.maximum(m - knee, 0.0)
+    target = knee + (255.0 - knee) * (1.0 - np.exp(-over / (255.0 - knee)))
+    scale = np.where(m > knee, target / np.maximum(m, 1e-6), 1.0)
+    return col * scale
+
+
+def _hsv(h, s, v):
+    """Vectorised HSV -> RGB (0..1 in, 0..1 out); h may be any real."""
+    h = np.asarray(h, dtype=np.float32) % 1.0
+    i = np.floor(h * 6.0)
+    f = h * 6.0 - i
+    p = v * (1 - s); q = v * (1 - s * f); t_ = v * (1 - s * (1 - f))
+    i = i.astype(np.int32) % 6
+    r = np.choose(i, [v, q, p, p, t_, v])
+    g = np.choose(i, [t_, v, v, q, p, p])
+    b = np.choose(i, [p, p, t_, v, v, q])
+    return np.stack([r, g, b], axis=-1).astype(np.float32)
+
+
+class _DropEngine:
+    """Pool of falling drops that land and spread as expanding rings.
+
+    Each drop: an optional fall (a soft streak sliding along `fall_dir`),
+    an impact flash, then one or two rings expanding at `speed` px/s and
+    fading over `life` s. Ring profile is a Gaussian in (distance - radius),
+    so rings are anti-aliased at any sub-pixel position. Rendering is
+    vectorised over all live drops."""
+
+    def __init__(self, width, height, cap, rng):
+        self.w, self.h, self.cap, self.rng = width, height, cap, rng
+        ys, xs = np.mgrid[0:height, 0:width].astype(np.float32)
+        self.xx, self.yy = xs, ys
+        self.x = np.zeros(cap, np.float32); self.y = np.zeros(cap, np.float32)
+        self.t_imp = np.full(cap, -1e9, np.float32)
+        self.col = np.zeros((cap, 3), np.float32)
+        self.amp = np.zeros(cap, np.float32)
+        self.speed = np.ones(cap, np.float32)
+        self.life = np.ones(cap, np.float32)
+        self.width = np.ones(cap, np.float32)
+        self.fall = np.zeros(cap, np.float32)      # fall duration (s)
+        self.fdx = np.zeros(cap, np.float32); self.fdy = np.ones(cap, np.float32)
+        self.fspeed = np.zeros(cap, np.float32)
+        self.echo = np.zeros(cap, np.float32)      # 2nd ring strength
+
+    def add(self, now, x, y, col, amp=1.0, speed=8.0, life=2.0, width=0.9,
+            fall=0.0, fall_dir=(0.0, 1.0), fall_speed=30.0, echo=0.45):
+        # Reuse the slot whose ripple ended longest ago.
+        end = self.t_imp + self.life
+        i = int(np.argmin(end))
+        self.x[i], self.y[i] = x, y
+        self.t_imp[i] = now + fall
+        self.col[i] = col
+        self.amp[i], self.speed[i], self.life[i] = amp, speed, life
+        self.width[i], self.fall[i] = width, fall
+        self.fdx[i], self.fdy[i] = fall_dir
+        self.fspeed[i], self.echo[i] = fall_speed, echo
+
+    def render(self, now, out, flash=1.0, max_r=None):
+        age = now - self.t_imp
+        live = (age > -self.fall) & (age < self.life)
+        if not live.any():
+            return
+        idx = np.nonzero(live)[0]
+        a = age[idx][:, None, None]
+        x = self.x[idx][:, None, None]; y = self.y[idx][:, None, None]
+        dx = self.xx[None] - x; dy = self.yy[None] - y
+        d = np.sqrt(dx * dx + dy * dy)
+        life = self.life[idx][:, None, None]
+        landed = a >= 0.0
+        ag = np.maximum(a, 0.0)
+        r = self.speed[idx][:, None, None] * ag
+        if max_r is not None:
+            r = np.minimum(r, max_r)
+        fade = np.clip(1.0 - ag / life, 0.0, 1.0) ** 2
+        # Rings thin out as they spread (energy over a growing circle).
+        spread = 1.0 / (1.0 + 0.12 * r)
+        w = self.width[idx][:, None, None]
+        ring = np.exp(-((d - r) / w) ** 2)
+        ring2 = np.exp(-((d - 0.62 * r) / w) ** 2) * self.echo[idx][:, None, None]
+        flash_k = np.exp(-(d / 0.9) ** 2) * np.clip(1.0 - ag / 0.22, 0.0, 1.0) * 1.6 * flash
+        val = (ring + ring2) * fade * spread + flash_k
+        val = np.where(landed, val, 0.0)
+        # Falling streak (before impact): a soft dot with a short tail.
+        falling = ~landed[:, 0, 0]
+        if falling.any():
+            fa = -a[falling]                               # time until impact
+            fs = self.fspeed[idx][falling][:, None, None]
+            fx = self.fdx[idx][falling][:, None, None]
+            fy = self.fdy[idx][falling][:, None, None]
+            hx = x[falling] - fx * fs * fa; hy = y[falling] - fy * fs * fa
+            px = self.xx[None] - hx; py = self.yy[None] - hy
+            along = px * fx + py * fy                       # + = ahead of head
+            perp = px * fy - py * fx
+            tail = np.where(along < 0, np.exp(along / 2.2), np.exp(-(along / 0.7) ** 2))
+            streak = tail * np.exp(-(perp / 0.6) ** 2) * 0.8
+            val[falling] = streak
+        val = val * self.amp[idx][:, None, None]
+        out += np.einsum('nhw,nc->hwc', val.astype(np.float32), self.col[idx])
+
+
+def _poisson(rng, rate, dt):
+    """Number of events in dt for a Poisson process of `rate` per second."""
+    return int(rng.poisson(max(rate, 0.0) * dt))
+
+
+class _TimedAnim(ProceduralAnimation):
+    """Shared clock handling for the stateful drop animations: first call
+    starts at t=0, dt is capped so a stall never dumps a burst of events,
+    and time running backwards restarts cleanly."""
+
+    # Scattered points don't need the --no-e mirror (which would repeat
+    # every drop 8 times down the panel); draw into all 32 usable rows.
+    NO_E_STYLE = "repeat"
+
+    def __init__(self, width, height, fps=30, seed=0):
+        super().__init__(width, height, fps)
+        self.rng = np.random.default_rng(seed)
+        self._last = None
+        self.area = width * height / 4096.0          # relative to 64x64
+        self.s = max(width, height) / 64.0           # pixel scale vs 64 wide
+
+    def _dt(self, t):
+        if self._last is None or t < self._last:
+            self._last = t
+            return 0.0
+        dt = min(t - self._last, 0.1)
+        self._last = t
+        return dt
+
+
+class RainRipples(_TimedAnim):
+    """Coloured rain on a dark pond. Starts nearly empty and builds: drops
+    fall, land with a tiny flash, and spread as expanding rings that
+    overlap and interfere. Where they land, colour pools and slowly
+    accumulates, then fades. The rain swells and eases in long waves."""
+
+    def __init__(self, width, height, fps=30, speed=1.0, seed=101,
+                 density=1.0):
+        super().__init__(width, height, fps, seed)
+        self.speed = speed
+        self.density = density
+        self.eng = _DropEngine(width, height, 48, self.rng)
+        self.wet = np.zeros((height, width, 3), np.float32)
+        self.hue0 = self.rng.random()
+
+    def generate_frame(self, time):
+        t = float(time) * self.speed
+        dt = self._dt(t)
+        # Build from near-empty over ~90 s, then swell/ease every ~4 min.
+        build = 1.0 - math.exp(-t / 45.0)
+        swell = 0.55 + 0.45 * math.sin(t * 2 * math.pi / 240.0 - 1.2)
+        rate = 9.0 * self.area * self.density * build * swell
+        hue = self.hue0 + 0.08 * math.sin(t / 70.0) + t / 900.0
+        for _ in range(_poisson(self.rng, rate, dt)):
+            x = self.rng.uniform(0, self.width); y = self.rng.uniform(0, self.height)
+            h = hue + self.rng.normal(0.0, 0.07)
+            col = _hsv(h, self.rng.uniform(0.55, 0.9), 1.0) * 150.0
+            self.eng.add(t, x, y, col, amp=self.rng.uniform(0.6, 1.0),
+                         speed=self.rng.uniform(6.0, 10.0) * self.s,
+                         life=self.rng.uniform(1.8, 3.0),
+                         width=0.85 * max(self.s, 0.8),
+                         fall=self.rng.uniform(0.15, 0.35),
+                         fall_speed=24.0 * self.s)
+            # Accumulate: a soft blot of the drop's colour where it lands.
+            g = np.exp(-(((self.eng.xx - x) ** 2 + (self.eng.yy - y) ** 2)
+                         / (2 * (2.2 * self.s) ** 2)))
+            self.wet += g[..., None] * col * 0.10
+        self.wet *= math.exp(-dt / 28.0)
+        out = np.zeros_like(self.wet)
+        out[..., 2] += 3.0                           # faint deep-water floor
+        out += self.wet
+        self.eng.render(t, out)
+        return _knee(out).astype(np.float32)
+
+
+class PinDrops(_TimedAnim):
+    """Tiny pin-prick drops in the dark: a single-pixel glint and a small,
+    quick ring. Sparse and quiet."""
+
+    def __init__(self, width, height, fps=30, speed=1.0, seed=202):
+        super().__init__(width, height, fps, seed)
+        self.speed = speed
+        self.eng = _DropEngine(width, height, 32, self.rng)
+        self.hue0 = self.rng.random()
+
+    def generate_frame(self, time):
+        t = float(time) * self.speed
+        dt = self._dt(t)
+        rate = 7.0 * self.area * (0.7 + 0.3 * math.sin(t / 23.0))
+        for _ in range(_poisson(self.rng, rate, dt)):
+            h = self.hue0 + t / 600.0 + self.rng.normal(0.0, 0.12)
+            col = _hsv(h, self.rng.uniform(0.3, 0.7), 1.0) * 160.0
+            self.eng.add(t, self.rng.uniform(0, self.width),
+                         self.rng.uniform(0, self.height), col,
+                         amp=self.rng.uniform(0.5, 1.0),
+                         speed=3.5 * self.s, life=1.4, width=0.7,
+                         echo=0.0)
+        out = np.zeros((self.height, self.width, 3), np.float32)
+        self.eng.render(t, out, max_r=3.5 * self.s)
+        return _knee(out).astype(np.float32)
+
+
+class Starfield(_TimedAnim):
+    """Three depths of stars drifting on a slowly turning diagonal, each
+    twinkling on its own, with an occasional shooting star. Mostly dark."""
+
+    def __init__(self, width, height, fps=30, speed=1.0, seed=303,
+                 density=1.0):
+        super().__init__(width, height, fps, seed)
+        self.speed = speed
+        n = max(6, int(140 * self.area * density))
+        r = self.rng
+        self.sx = r.uniform(0, width, n).astype(np.float32)
+        self.sy = r.uniform(0, height, n).astype(np.float32)
+        self.depth = r.choice([0.35, 0.7, 1.0], n, p=[0.55, 0.3, 0.15]).astype(np.float32)
+        self.tw_f = r.uniform(0.3, 1.4, n).astype(np.float32)
+        self.tw_p = r.uniform(0, 2 * np.pi, n).astype(np.float32)
+        tint = r.choice(3, n, p=[0.6, 0.25, 0.15])
+        base = np.array([[205, 215, 255], [255, 225, 190], [190, 240, 255]], np.float32)
+        self.col = base[tint]
+        self.next_shoot = r.uniform(6.0, 14.0)
+        self.shoot = None                            # (x, y, vx, vy, t0)
+
+    def _splat(self, out, x, y, col):
+        """Bilinear splat of points (x, y) with colours into out (wrapping)."""
+        x0 = np.floor(x).astype(np.int64); y0 = np.floor(y).astype(np.int64)
+        fx = (x - x0)[:, None]; fy = (y - y0)[:, None]
+        for ox, oy, wgt in ((0, 0, (1 - fx) * (1 - fy)), (1, 0, fx * (1 - fy)),
+                            (0, 1, (1 - fx) * fy), (1, 1, fx * fy)):
+            np.add.at(out, ((y0 + oy) % self.height, (x0 + ox) % self.width),
+                      col * wgt)
+
+    def generate_frame(self, time):
+        t = float(time) * self.speed
+        dt = self._dt(t)
+        ang = 0.6 + 0.5 * math.sin(t / 90.0)        # drift heading turns slowly
+        vx, vy = math.cos(ang) * 1.4, math.sin(ang) * 1.4
+        self.sx = (self.sx + vx * self.depth * dt * self.s) % self.width
+        self.sy = (self.sy + vy * self.depth * dt * self.s) % self.height
+        tw = 0.55 + 0.45 * np.sin(t * self.tw_f + self.tw_p)
+        bright = (self.depth ** 1.3 * tw)[:, None]
+        out = np.zeros((self.height, self.width, 3), np.float32)
+        self._splat(out, self.sx, self.sy, self.col * bright)
+        # Shooting star: a bright head with a fading tail, crossing fast.
+        if self.shoot is None and t >= self.next_shoot:
+            a = ang + self.rng.uniform(-0.4, 0.4)
+            sp = 45.0 * self.s
+            self.shoot = (self.rng.uniform(0, self.width), self.rng.uniform(0, self.height),
+                          math.cos(a) * sp, math.sin(a) * sp, t)
+        if self.shoot is not None:
+            x, y, svx, svy, t0 = self.shoot
+            age = t - t0
+            if age > 0.9:
+                self.shoot = None
+                self.next_shoot = t + self.rng.uniform(8.0, 22.0)
+            else:
+                k = np.arange(10, dtype=np.float32)
+                px = np.array(x + svx * (age - k * 0.012), np.float32)
+                py = np.array(y + svy * (age - k * 0.012), np.float32)
+                fade = (1.0 - age / 0.9) * np.exp(-k / 3.0)
+                self._splat(out, px, py, np.array([255, 245, 225], np.float32) * fade[:, None])
+        return _knee(out).astype(np.float32)
+
+
+class DiagonalRain(_TimedAnim):
+    """Wind-driven coloured rain: streaks slant across the panel at a
+    swaying angle and burst into splash rings. Livelier than rain_ripples,
+    with stronger colour."""
+
+    def __init__(self, width, height, fps=30, speed=1.0, seed=404,
+                 density=1.0):
+        super().__init__(width, height, fps, seed)
+        self.speed = speed
+        self.density = density
+        self.eng = _DropEngine(width, height, 64, self.rng)
+
+    def generate_frame(self, time):
+        t = float(time) * self.speed
+        dt = self._dt(t)
+        wind = 0.55 + 0.35 * math.sin(t / 17.0)      # slant from vertical, rad
+        fdir = (math.sin(wind), math.cos(wind))
+        gust = 0.6 + 0.4 * math.sin(t / 9.0) ** 2
+        rate = 34.0 * self.area * self.density * gust
+        for _ in range(_poisson(self.rng, rate, dt)):
+            h = t / 120.0 + self.rng.choice([0.0, 0.33, 0.66]) + self.rng.normal(0, 0.04)
+            col = _hsv(h, 0.85, 1.0) * 190.0
+            self.eng.add(t, self.rng.uniform(0, self.width),
+                         self.rng.uniform(0, self.height), col,
+                         amp=self.rng.uniform(0.7, 1.0),
+                         speed=7.0 * self.s, life=1.9, width=0.9,
+                         fall=self.rng.uniform(0.25, 0.5), fall_dir=fdir,
+                         fall_speed=34.0 * self.s, echo=0.3)
+        out = np.zeros((self.height, self.width, 3), np.float32)
+        self.eng.render(t, out, flash=1.3)
+        return _knee(out).astype(np.float32)
+
+
+class RippleStorm(_TimedAnim):
+    """The flashy one: clusters of drops land together in saturated colour,
+    their rings colliding and interfering, with now and then a soft glow
+    washing across the whole panel."""
+
+    def __init__(self, width, height, fps=30, speed=1.0, seed=505):
+        super().__init__(width, height, fps, seed)
+        self.speed = speed
+        self.eng = _DropEngine(width, height, 72, self.rng)
+        self.next_burst = 0.5
+        self.glow_t = -10.0
+        self.glow_col = np.zeros(3, np.float32)
+
+    def generate_frame(self, time):
+        t = float(time) * self.speed
+        dt = self._dt(t)
+        if t >= self.next_burst:
+            cx = self.rng.uniform(0, self.width); cy = self.rng.uniform(0, self.height)
+            h = self.rng.random()
+            for _ in range(int(self.rng.integers(4, 10))):
+                col = _hsv(h + self.rng.normal(0, 0.05), 0.95, 1.0) * 220.0
+                self.eng.add(t + self.rng.uniform(0, 0.6),
+                             (cx + self.rng.normal(0, 7 * self.s)) % self.width,
+                             (cy + self.rng.normal(0, 7 * self.s)) % self.height,
+                             col, amp=self.rng.uniform(0.7, 1.0),
+                             speed=self.rng.uniform(9.0, 14.0) * self.s,
+                             life=self.rng.uniform(1.6, 2.4), width=1.0)
+            self.next_burst = t + self.rng.uniform(0.7, 2.2)
+            if self.rng.random() < 0.18:
+                self.glow_t = t
+                self.glow_col = _hsv(h + 0.5, 0.6, 1.0) * 70.0
+        out = np.zeros((self.height, self.width, 3), np.float32)
+        g = t - self.glow_t
+        if 0.0 <= g < 1.5:
+            out += self.glow_col * (math.sin(math.pi * g / 1.5) ** 2)
+        self.eng.render(t, out, flash=1.6)
+        return _knee(out).astype(np.float32)
+
+
+class SlowTide(ProceduralAnimation):
+    """The quiet one. A dark field where faint light slowly gathers, drifts
+    and changes shape over minutes. Most of the panel stays near black;
+    glowing regions build, merge and dissolve so gradually you notice the
+    change rather than the motion."""
+
+    PALETTE = [(0.00, (20, 40, 110)), (0.30, (40, 120, 140)),
+               (0.55, (110, 60, 150)), (0.80, (170, 80, 90))]
+
+    def __init__(self, width, height, fps=30, speed=1.0, seed=77, palette=None):
+        super().__init__(width, height, fps)
+        ys, xs = np.mgrid[0:height, 0:width].astype(np.float32)
+        u = 64.0 / max(width, height)               # isotropic, 64 px reference
+        self.x = xs * u / 64.0 * 2.2; self.y = ys * u / 64.0 * 2.2
+        self.speed = speed
+        self.noise = _ValueNoise3D(16, seed)
+        self.noise2 = _ValueNoise3D(16, seed + 1)
+        self.lut = _build_palette_lut(_resolve_palette(palette, self.PALETTE))
+
+    def generate_frame(self, time):
+        t = float(time) * self.speed
+        z = t * 0.012
+        wx = (_fbm(self.noise2, self.x * 0.7, self.y * 0.7, z * 0.6 + 5.0, 3) - 0.5) * 1.4
+        f = _fbm(self.noise, self.x + wx, self.y - wx * 0.6, z, 4)
+        # Only the high parts of the field glow; the rest is dark space.
+        lo = 0.50 + 0.06 * math.sin(t / 53.0)
+        glow = np.clip((f - lo) / 0.28, 0.0, 1.0) ** 1.6
+        build = 1.0 - math.exp(-t / 40.0)
+        breathe = 0.75 + 0.25 * math.sin(t / 37.0)
+        col = _map_lut(self.lut, (f * 1.3 + t / 400.0) % 1.0)
+        return (col * (glow * build * breathe)[..., None] * 1.9).astype(np.float32)
+
+
 # Registry of available automations
 AUTOMATION_REGISTRY = {
     'color_wave': ColorWave,
@@ -3893,6 +4274,12 @@ AUTOMATION_REGISTRY = {
     'passing_clouds': PassingClouds,
     'night_clouds': NightClouds,
     'day_to_night': DayToNight,
+    'rain_ripples': RainRipples,
+    'pin_drops': PinDrops,
+    'starfield': Starfield,
+    'diagonal_rain': DiagonalRain,
+    'ripple_storm': RippleStorm,
+    'slow_tide': SlowTide,
 }
 
 
