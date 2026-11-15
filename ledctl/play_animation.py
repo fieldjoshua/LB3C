@@ -208,8 +208,11 @@ def main() -> int:
                       file=sys.stderr)
                 return 2
             # Drive the panel as if it had half the rows, which only uses
-            # address lines A-D. The panel then shows four 16-row bands
-            # (for 64 rows); we fill each band with a strip plus its mirror.
+            # address lines A-D. The panel then shows 32 distinct rows (for
+            # 64), each band of 16 appearing twice. Flowing textures fill
+            # each band with a strip plus its mirror so the repeats join
+            # seamlessly; point-like animations (NO_E_STYLE = "repeat") draw
+            # straight into the 32 rows, so a drop shows twice, not 8 times.
             args.height = p_rows // 2
             no_e_strip = p_rows // 8
     elif args.no_e:
@@ -273,43 +276,68 @@ def main() -> int:
             elif len(args.names) == 1:
                 print(f"note: {name!r} has no param {k!r}, ignoring",
                       file=sys.stderr)
-        return cls(rw, rh, fps=args.fps, **extra)
+        style = (getattr(cls, "NO_E_STYLE", "mirror") if args.no_e
+                 else "plain")
+        lay = layout(style)
+        return cls(lay["rw"], lay["rh"], fps=args.fps, **extra), lay
 
-    # Render at the pre-rotation size, so after --rotate the frame lands
-    # exactly on the output's width x height (matters for non-square panels).
+    # Each layout says what size an animation renders at and how that
+    # becomes the frame we send. Render at the pre-rotation size, so after
+    # --rotate the frame lands exactly on the output's width x height.
     args.rotate %= 360
     quarter = args.rotate in (0, 90, 180, 270)
-    out_w, out_h = (args.width, no_e_strip) if args.no_e else (args.width, args.height)
-    if not quarter:
-        # Any other angle: render a square canvas big enough that the
-        # rotated output rectangle fits inside it, then bilinear-sample the
-        # output pixels from it (inverse rotation about the centres).
-        rw = rh = int(np.ceil(np.hypot(out_w, out_h))) + 1
-        th = np.radians(args.rotate)
-        oy, ox = np.mgrid[0:out_h, 0:out_w].astype(np.float32)
-        ox -= (out_w - 1) / 2.0
-        oy -= (out_h - 1) / 2.0
-        # Content turns clockwise on screen (y down), so sample the canvas
-        # at the counter-clockwise rotation of each output pixel.
-        sx = ox * np.cos(th) + oy * np.sin(th) + (rw - 1) / 2.0
-        sy = -ox * np.sin(th) + oy * np.cos(th) + (rh - 1) / 2.0
-        x0 = np.clip(np.floor(sx).astype(np.int32), 0, rw - 2)
-        y0 = np.clip(np.floor(sy).astype(np.int32), 0, rh - 2)
-        fx = np.clip(sx - x0, 0.0, 1.0)[..., None]
-        fy = np.clip(sy - y0, 0.0, 1.0)[..., None]
+    layouts = {}
 
-        def rotate_frame(fr):
-            fr = fr.astype(np.float32)
-            top = fr[y0, x0] * (1 - fx) + fr[y0, x0 + 1] * fx
-            bot = fr[y0 + 1, x0] * (1 - fx) + fr[y0 + 1, x0 + 1] * fx
-            return top * (1 - fy) + bot * fy
-    elif args.no_e:
-        rw, rh = out_w, out_h
-    elif args.rotate in (90, 270):
-        rw, rh = args.height, args.width
-    else:
-        rw, rh = args.width, args.height
-    anim = make_anim(args.names[0])
+    def layout(style):
+        if style in layouts:
+            return layouts[style]
+        out_w = args.width
+        out_h = no_e_strip if style == "mirror" else args.height
+        lay = {"rotate": None, "mirror": style == "mirror"}
+        if not quarter:
+            # Any other angle: render a square canvas big enough that the
+            # rotated output rectangle fits inside it, then bilinear-sample
+            # the output pixels from it (inverse rotation about centres).
+            rw = rh = int(np.ceil(np.hypot(out_w, out_h))) + 1
+            th = np.radians(args.rotate)
+            oy, ox = np.mgrid[0:out_h, 0:out_w].astype(np.float32)
+            ox -= (out_w - 1) / 2.0
+            oy -= (out_h - 1) / 2.0
+            # Content turns clockwise on screen (y down), so sample the
+            # canvas at the counter-clockwise rotation of each output pixel.
+            sx = ox * np.cos(th) + oy * np.sin(th) + (rw - 1) / 2.0
+            sy = -ox * np.sin(th) + oy * np.cos(th) + (rh - 1) / 2.0
+            x0 = np.clip(np.floor(sx).astype(np.int32), 0, rw - 2)
+            y0 = np.clip(np.floor(sy).astype(np.int32), 0, rh - 2)
+            fx = np.clip(sx - x0, 0.0, 1.0)[..., None]
+            fy = np.clip(sy - y0, 0.0, 1.0)[..., None]
+
+            def rotate_frame(fr):
+                fr = fr.astype(np.float32)
+                top = fr[y0, x0] * (1 - fx) + fr[y0, x0 + 1] * fx
+                bot = fr[y0 + 1, x0] * (1 - fx) + fr[y0 + 1, x0 + 1] * fx
+                return top * (1 - fy) + bot * fy
+            lay["rotate"] = rotate_frame
+        elif style == "plain" and args.rotate in (90, 270):
+            rw, rh = args.height, args.width
+        else:
+            rw, rh = out_w, out_h
+        lay["rw"], lay["rh"] = rw, rh
+        layouts[style] = lay
+        return lay
+
+    def render(a, lay, t):
+        """One frame from animation `a`, at the size we send to the panel
+        (before any 90/180/270 turn)."""
+        fr = a.generate_frame(t)
+        if lay["rotate"] is not None:
+            fr = lay["rotate"](fr)          # float, quantized below
+        if lay["mirror"]:
+            band = np.concatenate([fr, fr[::-1]])
+            fr = np.concatenate([band, band])
+        return fr
+
+    anim, anim_lay = make_anim(args.names[0])
     anim_idx = 0
     cycles = 0.0        # completed passes through the list (fractional mid-fade)
 
@@ -420,7 +448,7 @@ def main() -> int:
 
             elapsed = now - t0
             anim_t = (elapsed - anim_start) * args.speed
-            np_frame = anim.generate_frame(anim_t)
+            np_frame = render(anim, anim_lay, anim_t)
 
             # Several names: hold each for --each seconds, then crossfade
             # into the next one over --fade seconds. Both are rendered during
@@ -430,17 +458,18 @@ def main() -> int:
                 hold = max(args.each, args.fade)
                 into = elapsed - anim_start - hold
                 if into >= 0 and nxt is None:
-                    nxt = make_anim(args.names[(anim_idx + 1) % len(args.names)])
+                    nxt, nxt_lay = make_anim(
+                        args.names[(anim_idx + 1) % len(args.names)])
                 wraps = (anim_idx + 1) % len(args.names) == 0
                 if nxt is not None:
                     a = min(1.0, into / args.fade) if args.fade > 0 else 1.0
                     if wraps:
                         cycles = np.floor(cycles) + a
-                    incoming = nxt.generate_frame(into * args.speed)
+                    incoming = render(nxt, nxt_lay, into * args.speed)
                     np_frame = (np_frame.astype(np.float32) * (1.0 - a)
                                 + incoming.astype(np.float32) * a)
                     if a >= 1.0:
-                        anim, nxt = nxt, None
+                        anim, anim_lay, nxt = nxt, nxt_lay, None
                         anim_idx = (anim_idx + 1) % len(args.names)
                         anim_start = elapsed - into
                         print(f"  now playing {args.names[anim_idx]!r}")
@@ -464,10 +493,6 @@ def main() -> int:
                                  np.where(d < 0, -y / d, np.inf))
                 k = np.clip(k.min(axis=-1, keepdims=True), 0.0, 1.0)
                 np_frame = np.clip(y + d * k, 0.0, 255.0)
-
-            if not quarter:
-                # Float result, so it goes through the quantizer below.
-                np_frame = rotate_frame(np_frame)
 
             # Float-output animations (ambient_*) carry sub-8-bit color.
             # Apply brightness in float, then sigma-delta dither to uint8:
@@ -517,9 +542,6 @@ def main() -> int:
                 if applied_brightness < 1.0:
                     np_frame = (np_frame.astype(np.float32)
                                 * applied_brightness).astype(np.uint8)
-                if args.no_e:
-                    band = np.concatenate([np_frame, np_frame[::-1]])
-                    np_frame = np.concatenate([band, band])
                 dev.draw_numpy(np.ascontiguousarray(np_frame))
             else:
                 rgb_data = frame_to_rgb_list(np_frame, applied_brightness)
